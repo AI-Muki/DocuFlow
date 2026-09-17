@@ -1,0 +1,6 @@
+{
+  "name": "DocuFlow AI",
+  "description": "Intelligent enterprise document management and workflow automation platform - Phase 1 Foundation & Architecture.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

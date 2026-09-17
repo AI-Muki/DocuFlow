@@ -1,0 +1,274 @@
+// DocuFlow AI - Enterprise Document Management & Workflow Automation
+// Prisma Schema - Phase 1: Foundation & Multi-Tenancy Architecture
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum SystemRole {
+  SUPER_ADMIN
+  ORG_ADMIN
+  MANAGER
+  EMPLOYEE
+}
+
+enum UserStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+}
+
+// ----------------------------------------------------------------------
+// Multi-Tenancy Foundation
+// ----------------------------------------------------------------------
+
+model Organization {
+  id          String       @id @default(uuid())
+  name        String
+  slug        String       @unique
+  logoUrl     String?
+  settings    Json?        @default("{}")
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  // Relationships
+  departments Department[]
+  users       User[]
+  roles       Role[]
+  userRoles   UserRole[]
+  auditLogs   AuditLog[]
+
+  // Future Module Relationships (Phase 2+)
+  documents     Document[]
+  workflows     Workflow[]
+  tasks         Task[]
+  approvals     Approval[]
+  notifications Notification[]
+
+  @@index([slug])
+  @@map("organizations")
+}
+
+model Department {
+  id             String       @id @default(uuid())
+  organizationId String
+  name           String
+  code           String?
+  description    String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  // Relationships
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  users          User[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+  @@map("departments")
+}
+
+model User {
+  id               String       @id @default(uuid())
+  organizationId   String?
+  departmentId     String?
+  email            String       @unique
+  passwordHash     String
+  firstName        String
+  lastName         String
+  avatarUrl        String?
+  status           UserStatus   @default(ACTIVE)
+  isEmailVerified  Boolean      @default(false)
+  lastLoginAt      DateTime?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  // Relationships
+  organization     Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  department       Department?   @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  userRoles        UserRole[]
+  auditLogs        AuditLog[]
+  assignedTasks    Task[]        @relation("AssignedTasks")
+  createdDocuments Document[]    @relation("CreatedDocuments")
+
+  @@index([organizationId])
+  @@index([email])
+  @@map("users")
+}
+
+// ----------------------------------------------------------------------
+// RBAC (Role-Based Access Control) Foundation
+// ----------------------------------------------------------------------
+
+model Role {
+  id             String           @id @default(uuid())
+  organizationId String?          // Null for global/system default roles, specified for custom tenant roles
+  name           String
+  description    String?
+  isSystem       Boolean          @default(false)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  // Relationships
+  organization   Organization?    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  permissions    RolePermission[]
+  userRoles      UserRole[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+  @@map("roles")
+}
+
+model Permission {
+  id          String           @id @default(uuid())
+  action      String           // e.g. "read", "create", "update", "delete", "approve"
+  resource    String           // e.g. "documents", "workflows", "approvals", "users", "audit"
+  key         String           @unique // e.g. "documents.read", "users.manage"
+  description String?
+  createdAt   DateTime         @default(now())
+
+  // Relationships
+  roles       RolePermission[]
+
+  @@index([resource])
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  createdAt    DateTime   @default(now())
+
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model UserRole {
+  userId         String
+  roleId         String
+  organizationId String
+  assignedAt     DateTime     @default(now())
+
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role           Role         @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId, organizationId])
+  @@index([organizationId])
+  @@index([userId])
+  @@map("user_roles")
+}
+
+// ----------------------------------------------------------------------
+// Enterprise Audit Trail
+// ----------------------------------------------------------------------
+
+model AuditLog {
+  id             String       @id @default(uuid())
+  organizationId String
+  userId         String?
+  action         String       // e.g. "auth.login", "user.create", "role.assign"
+  entity         String       // e.g. "User", "Organization", "Department"
+  entityId       String?
+  metadata       Json?        @default("{}")
+  ipAddress      String?
+  userAgent      String?
+  createdAt      DateTime     @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([userId])
+  @@map("audit_logs")
+}
+
+// ----------------------------------------------------------------------
+// Future Module Stubs (Schema Architecture Prepared for Phase 2+)
+// ----------------------------------------------------------------------
+
+model Document {
+  id             String       @id @default(uuid())
+  organizationId String
+  createdById    String
+  title          String
+  status         String       @default("DRAFT")
+  storageKey     String?
+  fileSizeBytes  Int?
+  mimeType       String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy      User         @relation("CreatedDocuments", fields: [createdById], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("documents")
+}
+
+model Workflow {
+  id             String       @id @default(uuid())
+  organizationId String
+  name           String
+  description    String?
+  status         String       @default("ACTIVE")
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("workflows")
+}
+
+model Task {
+  id             String       @id @default(uuid())
+  organizationId String
+  assignedToId   String?
+  title          String
+  status         String       @default("PENDING")
+  dueDate        DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  assignedTo     User?        @relation("AssignedTasks", fields: [assignedToId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@map("tasks")
+}
+
+model Approval {
+  id             String       @id @default(uuid())
+  organizationId String
+  title          String
+  status         String       @default("PENDING")
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("approvals")
+}
+
+model Notification {
+  id             String       @id @default(uuid())
+  organizationId String
+  title          String
+  message        String
+  read           Boolean      @default(false)
+  createdAt      DateTime     @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("notifications")
+}
