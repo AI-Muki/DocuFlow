@@ -23,18 +23,36 @@ enum UserStatus {
   SUSPENDED
 }
 
+enum DocumentStatus {
+  ACTIVE
+  ARCHIVED
+  PENDING_PROCESSING
+  PROCESSING
+  PROCESSING_FAILED
+  DELETED
+}
+
+enum FieldType {
+  TEXT
+  NUMBER
+  DATE
+  BOOLEAN
+  SELECT
+  MULTI_SELECT
+}
+
 // ----------------------------------------------------------------------
 // Multi-Tenancy Foundation
 // ----------------------------------------------------------------------
 
 model Organization {
-  id          String       @id @default(uuid())
-  name        String
-  slug        String       @unique
-  logoUrl     String?
-  settings    Json?        @default("{}")
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
+  id        String   @id @default(uuid())
+  name      String
+  slug      String   @unique
+  logoUrl   String?
+  settings  Json?    @default("{}")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Relationships
   departments Department[]
@@ -43,8 +61,14 @@ model Organization {
   userRoles   UserRole[]
   auditLogs   AuditLog[]
 
-  // Future Module Relationships (Phase 2+)
-  documents     Document[]
+  // Phase 2A: Document & Folder Foundation
+  documents                Document[]
+  folders                  Folder[]
+  documentTypes            DocumentType[]
+  tags                     Tag[]
+  documentFieldDefinitions DocumentFieldDefinition[]
+
+  // Future Module Relationships (Phase 2B+)
   workflows     Workflow[]
   tasks         Task[]
   approvals     Approval[]
@@ -55,17 +79,17 @@ model Organization {
 }
 
 model Department {
-  id             String       @id @default(uuid())
+  id             String   @id @default(uuid())
   organizationId String
   name           String
   code           String?
   description    String?
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   // Relationships
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  users          User[]
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  users        User[]
 
   @@unique([organizationId, name])
   @@index([organizationId])
@@ -73,27 +97,30 @@ model Department {
 }
 
 model User {
-  id               String       @id @default(uuid())
-  organizationId   String?
-  departmentId     String?
-  email            String       @unique
-  passwordHash     String
-  firstName        String
-  lastName         String
-  avatarUrl        String?
-  status           UserStatus   @default(ACTIVE)
-  isEmailVerified  Boolean      @default(false)
-  lastLoginAt      DateTime?
-  createdAt        DateTime     @default(now())
-  updatedAt        DateTime     @updatedAt
+  id              String     @id @default(uuid())
+  organizationId  String?
+  departmentId    String?
+  email           String     @unique
+  passwordHash    String
+  firstName       String
+  lastName        String
+  avatarUrl       String?
+  status          UserStatus @default(ACTIVE)
+  isEmailVerified Boolean    @default(false)
+  lastLoginAt     DateTime?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
 
   // Relationships
-  organization     Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
-  department       Department?   @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  organization     Organization?     @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  department       Department?       @relation(fields: [departmentId], references: [id], onDelete: SetNull)
   userRoles        UserRole[]
   auditLogs        AuditLog[]
-  assignedTasks    Task[]        @relation("AssignedTasks")
-  createdDocuments Document[]    @relation("CreatedDocuments")
+  assignedTasks    Task[]            @relation("AssignedTasks")
+  createdDocuments Document[]        @relation("CreatedDocuments")
+  ownedDocuments   Document[]        @relation("OwnedDocuments")
+  createdFolders   Folder[]          @relation("CreatedFolders")
+  uploadedVersions DocumentVersion[] @relation("UploadedVersions")
 
   @@index([organizationId])
   @@index([email])
@@ -105,18 +132,18 @@ model User {
 // ----------------------------------------------------------------------
 
 model Role {
-  id             String           @id @default(uuid())
-  organizationId String?          // Null for global/system default roles, specified for custom tenant roles
+  id             String   @id @default(uuid())
+  organizationId String? // Null for global/system default roles, specified for custom tenant roles
   name           String
   description    String?
-  isSystem       Boolean          @default(false)
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
+  isSystem       Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   // Relationships
-  organization   Organization?    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  permissions    RolePermission[]
-  userRoles      UserRole[]
+  organization Organization?    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  permissions  RolePermission[]
+  userRoles    UserRole[]
 
   @@unique([organizationId, name])
   @@index([organizationId])
@@ -124,15 +151,15 @@ model Role {
 }
 
 model Permission {
-  id          String           @id @default(uuid())
-  action      String           // e.g. "read", "create", "update", "delete", "approve"
-  resource    String           // e.g. "documents", "workflows", "approvals", "users", "audit"
-  key         String           @unique // e.g. "documents.read", "users.manage"
+  id          String   @id @default(uuid())
+  action      String // e.g. "read", "create", "update", "delete", "approve"
+  resource    String // e.g. "documents", "workflows", "approvals", "users", "audit"
+  key         String   @unique // e.g. "documents.read", "users.manage"
   description String?
-  createdAt   DateTime         @default(now())
+  createdAt   DateTime @default(now())
 
   // Relationships
-  roles       RolePermission[]
+  roles RolePermission[]
 
   @@index([resource])
   @@map("permissions")
@@ -141,10 +168,10 @@ model Permission {
 model RolePermission {
   roleId       String
   permissionId String
-  createdAt    DateTime   @default(now())
+  createdAt    DateTime @default(now())
 
-  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
-  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
 
   @@id([roleId, permissionId])
   @@map("role_permissions")
@@ -154,11 +181,11 @@ model UserRole {
   userId         String
   roleId         String
   organizationId String
-  assignedAt     DateTime     @default(now())
+  assignedAt     DateTime @default(now())
 
-  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role           Role         @relation(fields: [roleId], references: [id], onDelete: Cascade)
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role         Role         @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@id([userId, roleId, organizationId])
   @@index([organizationId])
@@ -171,19 +198,19 @@ model UserRole {
 // ----------------------------------------------------------------------
 
 model AuditLog {
-  id             String       @id @default(uuid())
+  id             String   @id @default(uuid())
   organizationId String
   userId         String?
-  action         String       // e.g. "auth.login", "user.create", "role.assign"
-  entity         String       // e.g. "User", "Organization", "Department"
+  action         String // e.g. "auth.login", "user.create", "role.assign"
+  entity         String // e.g. "User", "Organization", "Department"
   entityId       String?
-  metadata       Json?        @default("{}")
+  metadata       Json?    @default("{}")
   ipAddress      String?
   userAgent      String?
-  createdAt      DateTime     @default(now())
+  createdAt      DateTime @default(now())
 
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user           User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([organizationId, createdAt])
   @@index([userId])
@@ -191,83 +218,259 @@ model AuditLog {
 }
 
 // ----------------------------------------------------------------------
-// Future Module Stubs (Schema Architecture Prepared for Phase 2+)
+// Phase 2A: Document & Folder Foundation
 // ----------------------------------------------------------------------
 
-model Document {
-  id             String       @id @default(uuid())
+model Folder {
+  id             String    @id @default(uuid())
   organizationId String
+  parentFolderId String?
+  name           String
   createdById    String
-  title          String
-  status         String       @default("DRAFT")
-  storageKey     String?
-  fileSizeBytes  Int?
-  mimeType       String?
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  deletedAt      DateTime?
 
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  createdBy      User         @relation("CreatedDocuments", fields: [createdById], references: [id], onDelete: Cascade)
+  // Relationships
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  parentFolder Folder?      @relation("FolderHierarchy", fields: [parentFolderId], references: [id], onDelete: Restrict)
+  childFolders Folder[]     @relation("FolderHierarchy")
+  createdBy    User         @relation("CreatedFolders", fields: [createdById], references: [id], onDelete: Restrict)
+  documents    Document[]
 
+  // Indexes & Constraints
+  @@unique([organizationId, parentFolderId, name])
   @@index([organizationId])
-  @@map("documents")
+  @@index([parentFolderId])
+  @@index([createdById])
+  @@index([deletedAt])
+  @@index([organizationId, parentFolderId, deletedAt])
+  @@map("folders")
 }
 
-model Workflow {
-  id             String       @id @default(uuid())
+model DocumentType {
+  id             String   @id @default(uuid())
   organizationId String
   name           String
   description    String?
-  status         String       @default("ACTIVE")
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  // Relationships
+  organization Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  documents    Document[]
+  fields       DocumentFieldDefinition[]
+
+  // Indexes
+  @@unique([organizationId, name])
+  @@index([organizationId])
+  @@map("document_types")
+}
+
+model DocumentFieldDefinition {
+  id             String    @id @default(uuid())
+  organizationId String
+  documentTypeId String
+  name           String
+  key            String
+  type           FieldType
+  required       Boolean   @default(false)
+  options        Json? // For SELECT / MULTI_SELECT enum values
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  // Relationships
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  documentType DocumentType         @relation(fields: [documentTypeId], references: [id], onDelete: Cascade)
+  fieldValues  DocumentFieldValue[]
+
+  // Indexes
+  @@unique([documentTypeId, key])
+  @@index([organizationId])
+  @@index([documentTypeId])
+  @@map("document_field_definitions")
+}
+
+model Document {
+  id               String         @id @default(uuid())
+  organizationId   String
+  folderId         String?
+  documentTypeId   String?
+  name             String
+  originalFileName String
+  mimeType         String
+  fileSize         BigInt         @default(0)
+  storageKey       String
+  checksum         String
+  description      String?
+  status           DocumentStatus @default(ACTIVE)
+  createdById      String
+  ownerId          String
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+  deletedAt        DateTime?
+
+  // Relationships
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  folder       Folder?              @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  documentType DocumentType?        @relation(fields: [documentTypeId], references: [id], onDelete: SetNull)
+  createdBy    User                 @relation("CreatedDocuments", fields: [createdById], references: [id], onDelete: Restrict)
+  owner        User                 @relation("OwnedDocuments", fields: [ownerId], references: [id], onDelete: Restrict)
+  versions     DocumentVersion[]
+  tags         DocumentTag[]
+  metadata     DocumentFieldValue[]
+
+  // Indexes
+  @@index([organizationId])
+  @@index([folderId])
+  @@index([documentTypeId])
+  @@index([ownerId])
+  @@index([createdById])
+  @@index([createdAt])
+  @@index([updatedAt])
+  @@index([deletedAt])
+  @@index([status])
+  @@index([organizationId, status])
+  @@index([organizationId, folderId, deletedAt])
+  @@index([organizationId, documentTypeId])
+  @@index([organizationId, ownerId])
+  @@map("documents")
+}
+
+model DocumentVersion {
+  id                String   @id @default(uuid())
+  documentId        String
+  versionNumber     Int
+  storageKey        String
+  fileName          String
+  mimeType          String
+  fileSize          BigInt   @default(0)
+  checksum          String
+  uploadedById      String
+  changeDescription String?
+  createdAt         DateTime @default(now())
+
+  // Relationships
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  uploadedBy User     @relation("UploadedVersions", fields: [uploadedById], references: [id], onDelete: Restrict)
+
+  // Indexes & Constraints
+  @@unique([documentId, versionNumber])
+  @@index([documentId])
+  @@index([uploadedById])
+  @@index([createdAt])
+  @@map("document_versions")
+}
+
+model Tag {
+  id             String   @id @default(uuid())
+  organizationId String
+  name           String
+  createdAt      DateTime @default(now())
+
+  // Relationships
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  documents    DocumentTag[]
+
+  // Indexes & Constraints
+  @@unique([organizationId, name])
+  @@index([organizationId])
+  @@map("tags")
+}
+
+model DocumentTag {
+  documentId String
+  tagId      String
+  assignedAt DateTime @default(now())
+
+  // Relationships
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  tag      Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([documentId, tagId])
+  @@index([documentId])
+  @@index([tagId])
+  @@map("document_tags")
+}
+
+model DocumentFieldValue {
+  id                String   @id @default(uuid())
+  documentId        String
+  fieldDefinitionId String
+  value             Json? // Polymorphic JSON for typed values (TEXT, NUMBER, DATE, BOOLEAN, SELECT, MULTI_SELECT)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relationships
+  document        Document                @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  fieldDefinition DocumentFieldDefinition @relation(fields: [fieldDefinitionId], references: [id], onDelete: Cascade)
+
+  // Indexes & Constraints
+  @@unique([documentId, fieldDefinitionId])
+  @@index([documentId])
+  @@index([fieldDefinitionId])
+  @@map("document_field_values")
+}
+
+// ----------------------------------------------------------------------
+// Future Module Stubs (Phase 2B+ Workflows, Tasks, Approvals)
+// ----------------------------------------------------------------------
+
+model Workflow {
+  id             String   @id @default(uuid())
+  organizationId String
+  name           String
+  description    String?
+  status         String   @default("ACTIVE")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@index([organizationId])
   @@map("workflows")
 }
 
 model Task {
-  id             String       @id @default(uuid())
+  id             String    @id @default(uuid())
   organizationId String
   assignedToId   String?
   title          String
-  status         String       @default("PENDING")
+  status         String    @default("PENDING")
   dueDate        DateTime?
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  assignedTo     User?        @relation("AssignedTasks", fields: [assignedToId], references: [id], onDelete: SetNull)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  assignedTo   User?        @relation("AssignedTasks", fields: [assignedToId], references: [id], onDelete: SetNull)
 
   @@index([organizationId])
   @@map("tasks")
 }
 
 model Approval {
-  id             String       @id @default(uuid())
+  id             String   @id @default(uuid())
   organizationId String
   title          String
-  status         String       @default("PENDING")
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  status         String   @default("PENDING")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@index([organizationId])
   @@map("approvals")
 }
 
 model Notification {
-  id             String       @id @default(uuid())
+  id             String   @id @default(uuid())
   organizationId String
   title          String
   message        String
-  read           Boolean      @default(false)
-  createdAt      DateTime     @default(now())
+  read           Boolean  @default(false)
+  createdAt      DateTime @default(now())
 
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@index([organizationId])
   @@map("notifications")

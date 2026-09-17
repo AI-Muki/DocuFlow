@@ -124,3 +124,123 @@ export interface MultiTenantContext {
   roles: string[];
   permissions: PermissionKey[];
 }
+
+// ----------------------------------------------------------------------
+// Phase 2A: Document & Folder Domain Types
+// ----------------------------------------------------------------------
+
+export type DocumentStatus =
+  | 'ACTIVE'
+  | 'ARCHIVED'
+  | 'PENDING_PROCESSING'
+  | 'PROCESSING'
+  | 'PROCESSING_FAILED'
+  | 'DELETED';
+
+export type FieldType =
+  | 'TEXT'
+  | 'NUMBER'
+  | 'DATE'
+  | 'BOOLEAN'
+  | 'SELECT'
+  | 'MULTI_SELECT';
+
+export interface Folder {
+  id: string;
+  organizationId: string;
+  parentFolderId: string | null;
+  name: string;
+  createdById: string;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+  // Hydrated properties
+  parentFolder?: Folder | null;
+  childFolders?: Folder[];
+  documentsCount?: number;
+}
+
+export interface DocumentType {
+  id: string;
+  organizationId: string;
+  name: string;
+  description?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  fields?: DocumentFieldDefinition[];
+}
+
+export interface DocumentFieldDefinition {
+  id: string;
+  organizationId: string;
+  documentTypeId: string;
+  name: string;
+  key: string;
+  type: FieldType;
+  required: boolean;
+  options?: string[] | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DocumentFieldValue {
+  id: string;
+  documentId: string;
+  fieldDefinitionId: string;
+  value: unknown;
+  createdAt: string;
+  updatedAt: string;
+  fieldDefinition?: DocumentFieldDefinition;
+}
+
+export interface DocumentVersion {
+  id: string;
+  documentId: string;
+  versionNumber: number;
+  storageKey: string;
+  fileName: string;
+  mimeType: string;
+  fileSize: number;
+  checksum: string;
+  uploadedById: string;
+  changeDescription?: string | null;
+  createdAt: string;
+  uploadedByUser?: User | null;
+}
+
+export interface Tag {
+  id: string;
+  organizationId: string;
+  name: string;
+  createdAt: string;
+}
+
+export interface Document {
+  id: string;
+  organizationId: string;
+  folderId: string | null;
+  documentTypeId: string | null;
+  name: string;
+  originalFileName: string;
+  mimeType: string;
+  fileSize: number;
+  storageKey: string;
+  checksum: string;
+  description?: string | null;
+  status: DocumentStatus;
+  createdById: string;
+  ownerId: string;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+  // Hydrated details
+  folder?: Folder | null;
+  documentType?: DocumentType | null;
+  tags?: Tag[];
+  versions?: DocumentVersion[];
+  metadata?: Record<string, unknown>; // key -> value representation
+  fieldValues?: DocumentFieldValue[]; // raw field values
+  owner?: User | null;
+  createdBy?: User | null;
+}
+

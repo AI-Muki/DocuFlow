@@ -10,6 +10,7 @@ import {
 import { organizationService } from '../modules/organization/organization.service.ts';
 import { departmentService } from '../modules/department/department.service.ts';
 import { userService } from '../modules/users/user.service.ts';
+import { documentRouter } from '../modules/documents/document.routes.ts';
 import { store } from '../database/store.ts';
 import { formatErrorResponse, ValidationError } from '../lib/errors.ts';
 import {
@@ -30,7 +31,7 @@ apiRouter.get('/health', (_req, res) => {
   res.json({
     status: 'healthy',
     service: 'DocuFlow AI API',
-    phase: 'Phase 1: Foundation & Architecture',
+    phase: 'Phase 2A: Document & Folder Foundation',
     timestamp: new Date().toISOString(),
   });
 });
@@ -260,8 +261,10 @@ apiRouter.get('/roles', requireAuth, (req: AuthenticatedRequest, res: Response) 
 });
 
 // ----------------------------------------------------------------------
-// Audit Logs (Multi-Tenant Scoped)
+// Phase 2A: Documents, Folders, Types, Tags & Versions
 // ----------------------------------------------------------------------
+apiRouter.use('/', documentRouter);
+
 
 apiRouter.get(
   '/audit-logs',

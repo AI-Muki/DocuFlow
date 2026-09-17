@@ -13,6 +13,7 @@ import type {
 } from '../types/index.ts';
 import { ROLE_DEFAULT_PERMISSIONS, SYSTEM_PERMISSIONS } from '../modules/rbac/permissions.ts';
 import { ConflictError, NotFoundError, TenantViolationError } from '../lib/errors.ts';
+import { documentStore } from './document-store.ts';
 
 // In-Memory Multi-Tenant Store with Persistent Seed Data
 export class DataStore {
@@ -178,6 +179,9 @@ export class DataStore {
       '127.0.0.1',
       'System Seed'
     );
+
+    // 6. Seed Phase 2A Document & Folder Foundation Defaults
+    documentStore.seedPhase2Defaults(demoOrgId, adminUser.id);
 
     this.isInitialized = true;
   }
@@ -475,9 +479,9 @@ export class DataStore {
       counts: {
         totalUsers: users.length,
         totalDepartments: departments.length,
-        activeDocuments: 0, // Phase 2 stub
-        pendingApprovals: 0, // Phase 2 stub
-        activeWorkflows: 0, // Phase 2 stub
+        activeDocuments: documentStore.getDocuments(organizationId, { status: 'ACTIVE' }).length,
+        pendingApprovals: 0, // Phase 2B stub
+        activeWorkflows: 0, // Phase 2B stub
       },
       departments,
       users: users.slice(0, 10),

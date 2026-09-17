@@ -4,6 +4,7 @@ import { Sidebar, type NavSection } from './sidebar.tsx';
 import { Header } from './header.tsx';
 import { DashboardView } from '../dashboard/dashboard-view.tsx';
 import { SettingsView } from '../settings/settings-view.tsx';
+import { DocumentsView } from '../documents/documents-view.tsx';
 import { ComingSoonView } from '../coming-soon/coming-soon-view.tsx';
 import type { BreadcrumbItem } from './breadcrumbs.tsx';
 

@@ -98,7 +98,74 @@ async function main() {
         });
       }
 
-      console.log('✅ PostgreSQL database seeded successfully.');
+      // 5. Seed Phase 2A Folders for Demo Corporation
+      const folderNames = ['Finance', 'HR', 'Legal', 'IT', 'Projects'];
+      const adminUser = await prisma.user.findUnique({ where: { email: 'admin@demo.local' } });
+      if (adminUser) {
+        for (const fName of folderNames) {
+          await prisma.folder.upsert({
+            where: {
+              organizationId_parentFolderId_name: {
+                organizationId: demoOrg.id,
+                parentFolderId: null,
+                name: fName,
+              },
+            },
+            update: {},
+            create: {
+              organizationId: demoOrg.id,
+              name: fName,
+              createdById: adminUser.id,
+            },
+          });
+        }
+
+        // 6. Seed Phase 2A Document Types & Field Definitions
+        const docTypes = [
+          { name: 'Invoice', description: 'Vendor invoices and billing notices' },
+          { name: 'Contract', description: 'Legal agreements and contracts' },
+          { name: 'Purchase Order', description: 'Procurement and purchasing orders' },
+          { name: 'Employee Document', description: 'Employee records and HR documents' },
+          { name: 'Receipt', description: 'Expense receipts and receipts' },
+        ];
+
+        for (const dt of docTypes) {
+          await prisma.documentType.upsert({
+            where: {
+              organizationId_name: {
+                organizationId: demoOrg.id,
+                name: dt.name,
+              },
+            },
+            update: {},
+            create: {
+              organizationId: demoOrg.id,
+              name: dt.name,
+              description: dt.description,
+            },
+          });
+        }
+
+        // 7. Seed Phase 2A Tags
+        const tags = ['Urgent', 'Confidential', 'Finance', 'Legal', 'Internal'];
+        for (const tagName of tags) {
+          await prisma.tag.upsert({
+            where: {
+              organizationId_name: {
+                organizationId: demoOrg.id,
+                name: tagName,
+              },
+            },
+            update: {},
+            create: {
+              organizationId: demoOrg.id,
+              name: tagName,
+            },
+          });
+        }
+      }
+
+      console.log('✅ PostgreSQL database seeded successfully with Phase 1 & Phase 2A records.');
     } catch (err: unknown) {
       console.warn('PostgreSQL database not currently available, seeded in-memory store instead:', (err as Error).message);
     }
