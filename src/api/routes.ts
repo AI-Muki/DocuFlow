@@ -11,6 +11,7 @@ import { organizationService } from '../modules/organization/organization.servic
 import { departmentService } from '../modules/department/department.service.ts';
 import { userService } from '../modules/users/user.service.ts';
 import { documentRouter } from '../modules/documents/document.routes.ts';
+import { documentUploadService } from '../modules/documents/document-upload.service.ts';
 import { store } from '../database/store.ts';
 import { formatErrorResponse, ValidationError } from '../lib/errors.ts';
 import {
@@ -261,7 +262,32 @@ apiRouter.get('/roles', requireAuth, (req: AuthenticatedRequest, res: Response) 
 });
 
 // ----------------------------------------------------------------------
-// Phase 2A: Documents, Folders, Types, Tags & Versions
+// Phase 2B: Public Signed Token Document Download
+// ----------------------------------------------------------------------
+apiRouter.get('/documents/files/download', async (req, res) => {
+  try {
+    const token = String(req.query.token || '');
+    if (!token) {
+      throw new ValidationError('Download token is required');
+    }
+
+    const download = await documentUploadService.downloadBySignedToken(token);
+    res.setHeader('Content-Type', download.mimeType);
+    res.setHeader('Content-Length', download.fileSize);
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${encodeURIComponent(download.fileName)}"`
+    );
+    res.setHeader('Cache-Control', 'private, no-cache, no-store, must-revalidate');
+    res.send(download.buffer);
+  } catch (err: unknown) {
+    const status = (err as { statusCode?: number }).statusCode || 400;
+    res.status(status).json(formatErrorResponse(err));
+  }
+});
+
+// ----------------------------------------------------------------------
+// Phase 2A & 2B: Documents, Folders, Types, Tags, Versions & Uploads
 // ----------------------------------------------------------------------
 apiRouter.use('/', documentRouter);
 

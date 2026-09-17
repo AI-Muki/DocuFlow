@@ -804,6 +804,13 @@ export class DocumentStoreExtension {
   // Document Versions
   // --------------------------------------------------------------------
 
+  public findDocumentByChecksum(organizationId: string, checksum: string): Document | null {
+    const doc = Array.from(this.documents.values()).find(
+      (d) => d.organizationId === organizationId && d.checksum === checksum && d.deletedAt === null
+    );
+    return doc ? this.hydrateDocument(doc) : null;
+  }
+
   public getDocumentVersions(organizationId: string, documentId: string): DocumentVersion[] {
     const doc = this.documents.get(documentId);
     if (!doc || doc.organizationId !== organizationId || doc.deletedAt !== null) {
@@ -813,6 +820,20 @@ export class DocumentStoreExtension {
     const versions = this.documentVersions.get(documentId) || [];
     // Sort descending by version number
     return [...versions].sort((a, b) => b.versionNumber - a.versionNumber);
+  }
+
+  public getDocumentVersion(
+    organizationId: string,
+    documentId: string,
+    versionNumber: number
+  ): DocumentVersion | null {
+    const doc = this.documents.get(documentId);
+    if (!doc || doc.organizationId !== organizationId || doc.deletedAt !== null) {
+      throw new NotFoundError('Document');
+    }
+
+    const versions = this.documentVersions.get(documentId) || [];
+    return versions.find((v) => v.versionNumber === versionNumber) || null;
   }
 
   public createDocumentVersion(

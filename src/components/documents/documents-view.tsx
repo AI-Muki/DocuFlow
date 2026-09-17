@@ -17,6 +17,10 @@ import {
   AlertCircle,
   FileCode,
   ArrowUpDown,
+  Upload,
+  Download,
+  ExternalLink,
+  Link2,
 } from 'lucide-react';
 import type {
   Document,
@@ -32,6 +36,8 @@ import { Button } from '../ui/button.tsx';
 import { Badge } from '../ui/badge.tsx';
 import { EmptyState } from '../ui/empty-state.tsx';
 import { Modal } from '../ui/modal.tsx';
+import { DocumentUploadModal } from './document-upload-modal.tsx';
+import { VersionUploadModal } from './version-upload-modal.tsx';
 import { formatDateTime } from '../../lib/utils.ts';
 import { useToast } from '../ui/toast.tsx';
 
@@ -100,6 +106,10 @@ export function DocumentsView({ user }: DocumentsViewProps) {
   const [docToMove, setDocToMove] = useState<Document | null>(null);
   const [targetFolderIdForMove, setTargetFolderIdForMove] = useState<string | null>(null);
 
+  // Phase 2B: Real Upload Modals
+  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
+  const [isVersionUploadOpen, setIsVersionUploadOpen] = useState(false);
+
   // Fetch initial data
   const fetchData = async () => {
     setIsLoading(true);
@@ -162,6 +172,40 @@ export function DocumentsView({ user }: DocumentsViewProps) {
       addToast('Failed to load version history', 'error');
     } finally {
       setIsLoadingVersions(false);
+    }
+  };
+
+  // Phase 2B: File Download & Access Handlers
+  const handleDownloadFile = (docId: string, versionNumber?: number) => {
+    const url = `/api/documents/${docId}/download${versionNumber ? `?version=${versionNumber}` : ''}`;
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', '');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    addToast('File download started', 'info');
+  };
+
+  const handlePreviewFile = (docId: string, versionNumber?: number) => {
+    const url = `/api/documents/${docId}/preview${versionNumber ? `?version=${versionNumber}` : ''}`;
+    window.open(url, '_blank', 'noopener,noreferrer');
+  };
+
+  const handleCopySignedLink = async (docId: string, versionNumber?: number) => {
+    try {
+      const url = `/api/documents/${docId}/signed-url${versionNumber ? `?version=${versionNumber}` : ''}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (data.success && data.data?.url) {
+        const fullUrl = `${window.location.origin}${data.data.url}`;
+        await navigator.clipboard.writeText(fullUrl);
+        addToast('Secure signed link copied to clipboard (valid for 15 min)', 'success');
+      } else {
+        throw new Error(data.message || 'Failed to generate signed link');
+      }
+    } catch (err) {
+      addToast('Could not generate signed link', 'error');
     }
   };
 
@@ -543,8 +587,11 @@ export function DocumentsView({ user }: DocumentsViewProps) {
                 <Button variant="outline" size="sm" onClick={() => setIsCreateFolderOpen(true)}>
                   <FolderPlus className="mr-1.5 h-3.5 w-3.5" /> New Folder
                 </Button>
-                <Button variant="primary" size="sm" onClick={() => setIsCreateDocOpen(true)}>
-                  <Plus className="mr-1.5 h-3.5 w-3.5" /> Add Document Record
+                <Button variant="outline" size="sm" onClick={() => setIsCreateDocOpen(true)}>
+                  <Plus className="mr-1.5 h-3.5 w-3.5" /> Manual Record
+                </Button>
+                <Button variant="primary" size="sm" onClick={() => setIsUploadModalOpen(true)}>
+                  <Upload className="mr-1.5 h-3.5 w-3.5" /> Upload Files
                 </Button>
               </div>
             </div>
@@ -559,11 +606,16 @@ export function DocumentsView({ user }: DocumentsViewProps) {
                     <EmptyState
                       icon={<FolderIcon className="h-8 w-8 text-slate-400" />}
                       title="This folder is empty"
-                      description="Create a subfolder or register a document record to start organizing."
+                      description="Upload files or create subfolders to start organizing documents."
                       action={
-                        <Button size="sm" onClick={() => setIsCreateDocOpen(true)}>
-                          Add Document Record
-                        </Button>
+                        <div className="flex items-center gap-2 justify-center">
+                          <Button size="sm" variant="outline" onClick={() => setIsCreateFolderOpen(true)}>
+                            <FolderPlus className="mr-1.5 h-3.5 w-3.5" /> New Folder
+                          </Button>
+                          <Button size="sm" onClick={() => setIsUploadModalOpen(true)}>
+                            <Upload className="mr-1.5 h-3.5 w-3.5" /> Upload Files
+                          </Button>
+                        </div>
                       }
                     />
                   </div>
@@ -656,6 +708,20 @@ export function DocumentsView({ user }: DocumentsViewProps) {
                             onClick={(e) => e.stopPropagation()}
                           >
                             <button
+                              onClick={() => handleDownloadFile(doc.id)}
+                              className="rounded p-1 text-slate-400 hover:bg-blue-50 hover:text-blue-600"
+                              title="Download File"
+                            >
+                              <Download className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              onClick={() => handlePreviewFile(doc.id)}
+                              className="rounded p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-700"
+                              title="Preview in Tab"
+                            >
+                              <ExternalLink className="h-3.5 w-3.5" />
+                            </button>
+                            <button
                               onClick={() => handleCopyDocument(doc)}
                               className="rounded p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-700"
                               title="Duplicate Record"
@@ -736,6 +802,34 @@ export function DocumentsView({ user }: DocumentsViewProps) {
                     </div>
                   </div>
 
+                  {/* File Access & Operations Bar */}
+                  <div className="flex items-center gap-1.5">
+                    <Button
+                      size="sm"
+                      className="flex-1 text-xs h-8"
+                      onClick={() => handleDownloadFile(selectedDoc.id)}
+                    >
+                      <Download className="mr-1.5 h-3.5 w-3.5" /> Download
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="flex-1 text-xs h-8"
+                      onClick={() => handlePreviewFile(selectedDoc.id)}
+                    >
+                      <ExternalLink className="mr-1.5 h-3.5 w-3.5" /> Preview
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-xs h-8 px-2.5 border border-slate-200"
+                      onClick={() => handleCopySignedLink(selectedDoc.id)}
+                      title="Copy temporary signed URL (valid for 15 min)"
+                    >
+                      <Link2 className="h-3.5 w-3.5 text-slate-600" />
+                    </Button>
+                  </div>
+
                   {/* Assigned Tags */}
                   <div>
                     <span className="font-semibold text-slate-700 block mb-1">Tags</span>
@@ -774,8 +868,8 @@ export function DocumentsView({ user }: DocumentsViewProps) {
                         <History className="h-3.5 w-3.5 text-blue-600" />
                         <span>Version History ({versions.length})</span>
                       </div>
-                      <Button variant="outline" size="sm" onClick={() => setIsNewVersionOpen(true)}>
-                        <Plus className="mr-1 h-3 w-3" /> New Version
+                      <Button variant="outline" size="sm" onClick={() => setIsVersionUploadOpen(true)}>
+                        <Upload className="mr-1 h-3 w-3" /> New Version
                       </Button>
                     </div>
 
@@ -786,29 +880,41 @@ export function DocumentsView({ user }: DocumentsViewProps) {
                         {versions.map((v, idx) => (
                           <div
                             key={v.id}
-                            className="rounded-md border border-slate-200 p-2 bg-white flex items-center justify-between"
+                            className="rounded-md border border-slate-200 p-2 bg-white flex items-center justify-between gap-2"
                           >
-                            <div>
+                            <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-1.5">
-                                <span className="font-bold text-slate-900">v{v.versionNumber}</span>
+                                <span className="font-bold text-slate-900 shrink-0">v{v.versionNumber}</span>
                                 {idx === 0 && <Badge variant="success" className="text-[9px] px-1">Active</Badge>}
-                                <span className="text-[11px] text-slate-500">{v.fileName}</span>
+                                <span className="text-[11px] text-slate-500 truncate" title={v.fileName}>{v.fileName}</span>
                               </div>
-                              <p className="text-[10px] text-slate-400 mt-0.5">
+                              <p className="text-[10px] text-slate-400 mt-0.5 truncate">
                                 {formatDateTime(v.createdAt)} {v.changeDescription && `• "${v.changeDescription}"`}
                               </p>
                             </div>
 
-                            {idx !== 0 && (
+                            <div className="flex items-center gap-1 shrink-0">
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                onClick={() => handleRestoreVersion(v)}
-                                className="text-[11px] text-blue-600 hover:text-blue-700"
+                                onClick={() => handleDownloadFile(selectedDoc.id, v.versionNumber)}
+                                className="text-[11px] text-slate-600 hover:text-blue-600 h-7 px-1.5"
+                                title={`Download version ${v.versionNumber}`}
                               >
-                                Restore
+                                <Download className="h-3.5 w-3.5" />
                               </Button>
-                            )}
+
+                              {idx !== 0 && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => handleRestoreVersion(v)}
+                                  className="text-[11px] text-blue-600 hover:text-blue-700 h-7 px-1.5"
+                                >
+                                  Restore
+                                </Button>
+                              )}
+                            </div>
                           </div>
                         ))}
                       </div>
@@ -1171,6 +1277,34 @@ export function DocumentsView({ user }: DocumentsViewProps) {
           </div>
         </form>
       </Modal>
+
+      {/* Phase 2B: Real Document Upload Modal */}
+      <DocumentUploadModal
+        isOpen={isUploadModalOpen}
+        onClose={() => setIsUploadModalOpen(false)}
+        onUploadSuccess={() => {
+          fetchData();
+          addToast('Document files uploaded successfully', 'success');
+        }}
+        currentFolderId={currentFolderId}
+        folders={folders}
+        documentTypes={documentTypes}
+        tags={tags}
+      />
+
+      {/* Phase 2B: Real Version Upload Modal */}
+      <VersionUploadModal
+        isOpen={isVersionUploadOpen}
+        onClose={() => setIsVersionUploadOpen(false)}
+        document={selectedDoc}
+        onVersionUploaded={() => {
+          if (selectedDoc) {
+            loadVersions(selectedDoc);
+            fetchData();
+            addToast('New document version registered', 'success');
+          }
+        }}
+      />
     </div>
   );
 }

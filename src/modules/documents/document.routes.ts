@@ -1,4 +1,5 @@
-import { Router, type Response } from 'express';
+import { Router, type Response, type Request, type NextFunction } from 'express';
+import multer from 'multer';
 import {
   type AuthenticatedRequest,
   requireAuth,
@@ -6,6 +7,8 @@ import {
   requireTenant,
 } from '../auth/auth.middleware.ts';
 import { documentFolderService } from './document.service.ts';
+import { documentUploadService } from './document-upload.service.ts';
+import { storageConfig } from '../storage/storage.config.ts';
 import { formatErrorResponse, ValidationError } from '../../lib/errors.ts';
 import {
   assignTagSchema,
@@ -25,6 +28,37 @@ import {
 import type { DocumentStatus } from '../../types/index.ts';
 
 export const documentRouter = Router();
+
+// Configure in-memory upload handler
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: storageConfig.maxFileSizeBytes,
+  },
+});
+
+function handleSingleUpload(fieldName: string) {
+  const single = upload.single(fieldName);
+  return (req: Request, res: Response, next: NextFunction) => {
+    single(req, res, (err: unknown) => {
+      if (err) {
+        const multerErr = err as { code?: string; message?: string };
+        if (multerErr.code === 'LIMIT_FILE_SIZE') {
+          const maxMb = (storageConfig.maxFileSizeBytes / (1024 * 1024)).toFixed(1);
+          return res.status(400).json(
+            formatErrorResponse(
+              new ValidationError(`File size exceeds maximum allowed limit of ${maxMb}MB`)
+            )
+          );
+        }
+        return res.status(400).json(
+          formatErrorResponse(new ValidationError(multerErr.message || 'File upload error'))
+        );
+      }
+      next();
+    });
+  };
+}
 
 // Apply auth and tenant verification on all document & folder endpoints
 documentRouter.use(requireAuth);
@@ -218,10 +252,159 @@ documentRouter.get('/documents', (req: AuthenticatedRequest, res: Response) => {
   }
 });
 
+// ----------------------------------------------------------------------
+// Phase 2B: Real Document File Upload & Duplicate Detection
+// ----------------------------------------------------------------------
+
+documentRouter.post(
+  '/documents/upload',
+  requirePermission('documents.create'),
+  handleSingleUpload('file'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!req.file) {
+        throw new ValidationError('No file was uploaded');
+      }
+
+      // Parse tags if provided as JSON or comma separated string
+      let tags: string[] | undefined = undefined;
+      if (req.body.tags) {
+        if (Array.isArray(req.body.tags)) {
+          tags = req.body.tags;
+        } else if (typeof req.body.tags === 'string') {
+          try {
+            const parsed = JSON.parse(req.body.tags);
+            tags = Array.isArray(parsed) ? parsed : [req.body.tags];
+          } catch {
+            tags = req.body.tags.split(',').map((t: string) => t.trim()).filter(Boolean);
+          }
+        }
+      }
+
+      // Parse metadata if provided
+      let metadata: Record<string, unknown> | undefined = undefined;
+      if (req.body.metadata) {
+        if (typeof req.body.metadata === 'object') {
+          metadata = req.body.metadata;
+        } else if (typeof req.body.metadata === 'string') {
+          try {
+            metadata = JSON.parse(req.body.metadata);
+          } catch {
+            // ignore non-json metadata
+          }
+        }
+      }
+
+      const allowDuplicate =
+        req.body.allowDuplicate === true ||
+        req.body.allowDuplicate === 'true' ||
+        req.query.allowDuplicate === 'true';
+
+      const folderId =
+        req.body.folderId === 'null' || req.body.folderId === '' ? null : req.body.folderId;
+      const documentTypeId =
+        req.body.documentTypeId === 'null' || req.body.documentTypeId === ''
+          ? null
+          : req.body.documentTypeId;
+
+      const result = await documentUploadService.uploadDocument(req.user!, {
+        buffer: req.file.buffer,
+        originalFileName: req.file.originalname,
+        declaredMimeType: req.file.mimetype,
+        name: req.body.name,
+        folderId,
+        documentTypeId,
+        description: req.body.description,
+        tags,
+        metadata,
+        allowDuplicate,
+      });
+
+      if (result.isDuplicate) {
+        return res.status(409).json({
+          success: false,
+          isDuplicate: true,
+          message: result.duplicateMessage || 'An identical file already exists.',
+          data: {
+            existingDocument: result.existingDocument,
+          },
+        });
+      }
+
+      res.status(201).json({
+        success: true,
+        isDuplicate: false,
+        data: {
+          document: result.document,
+          version: result.version,
+        },
+      });
+    } catch (err: unknown) {
+      const status = (err as { statusCode?: number }).statusCode || 400;
+      res.status(status).json(formatErrorResponse(err));
+    }
+  }
+);
+
 documentRouter.get('/documents/:id', (req: AuthenticatedRequest, res: Response) => {
   try {
     const document = documentFolderService.getDocumentById(req.user!, req.params.id);
     res.json({ success: true, data: document });
+  } catch (err: unknown) {
+    const status = (err as { statusCode?: number }).statusCode || 404;
+    res.status(status).json(formatErrorResponse(err));
+  }
+});
+
+// ----------------------------------------------------------------------
+// Phase 2B: Secure File Download, Preview & Signed URL Generation
+// ----------------------------------------------------------------------
+
+documentRouter.get('/documents/:id/download', requirePermission('documents.read'), async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const versionNumber = req.query.version !== undefined ? parseInt(String(req.query.version), 10) : undefined;
+    const download = await documentUploadService.downloadDocumentFile(req.user!, req.params.id, versionNumber);
+
+    res.setHeader('Content-Type', download.mimeType);
+    res.setHeader('Content-Length', download.fileSize);
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${encodeURIComponent(download.fileName)}"`
+    );
+    res.setHeader('Cache-Control', 'private, no-cache, no-store, must-revalidate');
+    res.send(download.buffer);
+  } catch (err: unknown) {
+    const status = (err as { statusCode?: number }).statusCode || 404;
+    res.status(status).json(formatErrorResponse(err));
+  }
+});
+
+documentRouter.get('/documents/:id/preview', requirePermission('documents.read'), async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const versionNumber = req.query.version !== undefined ? parseInt(String(req.query.version), 10) : undefined;
+    const download = await documentUploadService.downloadDocumentFile(req.user!, req.params.id, versionNumber);
+
+    res.setHeader('Content-Type', download.mimeType);
+    res.setHeader('Content-Length', download.fileSize);
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="${encodeURIComponent(download.fileName)}"`
+    );
+    res.setHeader('Cache-Control', 'private, no-cache');
+    res.send(download.buffer);
+  } catch (err: unknown) {
+    const status = (err as { statusCode?: number }).statusCode || 404;
+    res.status(status).json(formatErrorResponse(err));
+  }
+});
+
+documentRouter.get('/documents/:id/signed-url', requirePermission('documents.read'), async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const versionNumber = req.query.version !== undefined ? parseInt(String(req.query.version), 10) : undefined;
+    const inline = req.query.inline === 'true';
+    const result = await documentUploadService.getSignedDownloadUrl(req.user!, req.params.id, versionNumber, inline);
+
+    res.json({ success: true, data: result });
   } catch (err: unknown) {
     const status = (err as { statusCode?: number }).statusCode || 404;
     res.status(status).json(formatErrorResponse(err));
@@ -331,6 +514,35 @@ documentRouter.post('/documents/:id/versions', requirePermission('documents.upda
     res.status(status).json(formatErrorResponse(err));
   }
 });
+
+documentRouter.post(
+  '/documents/:id/versions/upload',
+  requirePermission('documents.update'),
+  handleSingleUpload('file'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!req.file) {
+        throw new ValidationError('No file was uploaded');
+      }
+
+      const newVersion = await documentUploadService.uploadNewVersion(
+        req.user!,
+        req.params.id,
+        {
+          buffer: req.file.buffer,
+          originalFileName: req.file.originalname,
+          declaredMimeType: req.file.mimetype,
+        },
+        req.body.changeDescription
+      );
+
+      res.status(201).json({ success: true, data: newVersion });
+    } catch (err: unknown) {
+      const status = (err as { statusCode?: number }).statusCode || 400;
+      res.status(status).json(formatErrorResponse(err));
+    }
+  }
+);
 
 documentRouter.post('/documents/:id/versions/:versionNumber/restore', requirePermission('documents.update'), (req: AuthenticatedRequest, res: Response) => {
   try {

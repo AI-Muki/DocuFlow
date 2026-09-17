@@ -1,6 +1,6 @@
 {
   "name": "DocuFlow AI",
-  "description": "Intelligent enterprise document management and workflow automation platform - Phase 2A Document & Folder Foundation.",
+  "description": "Intelligent enterprise document management platform - Phase 2B File Storage & Document Upload Flow.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
