@@ -631,7 +631,7 @@ export function DocumentsView({ user }: DocumentsViewProps) {
                             <div className="min-w-0">
                               <div className="flex items-center gap-2">
                                 <span className="text-sm font-semibold text-slate-900 truncate">{doc.name}</span>
-                                <Badge variant="neutral" className="text-[10px] px-1.5 py-0">
+                                <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
                                   v{doc.versions?.[0]?.versionNumber || 1}
                                 </Badge>
                                 {doc.documentType && (
@@ -742,7 +742,7 @@ export function DocumentsView({ user }: DocumentsViewProps) {
                     {selectedDoc.tags && selectedDoc.tags.length > 0 ? (
                       <div className="flex flex-wrap gap-1">
                         {selectedDoc.tags.map((t) => (
-                          <Badge key={t.id} variant="neutral" className="text-[10px]">
+                          <Badge key={t.id} variant="secondary" className="text-[10px]">
                             {t.name}
                           </Badge>
                         ))}
@@ -856,7 +856,7 @@ export function DocumentsView({ user }: DocumentsViewProps) {
                         >
                           <span className="font-medium">{f.name}</span>
                           <div className="flex items-center gap-1.5">
-                            <Badge variant="neutral" className="text-[9px] px-1">
+                            <Badge variant="secondary" className="text-[9px] px-1">
                               {f.type}
                             </Badge>
                             {f.required && (

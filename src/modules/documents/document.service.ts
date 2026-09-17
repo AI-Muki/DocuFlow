@@ -107,6 +107,12 @@ export class DocumentFolderService {
     );
   }
 
+  public getFolderPath(user: User, folderId: string): Folder[] {
+    rbacService.assertPermission(user, 'documents.read');
+    const orgId = user.organizationId!;
+    return documentStore.getFolderPath(orgId, folderId);
+  }
+
   // --------------------------------------------------------------------
   // Document Operations
   // --------------------------------------------------------------------
@@ -134,6 +140,26 @@ export class DocumentFolderService {
       throw new NotFoundError('Document');
     }
     return doc;
+  }
+
+  public createDocument(
+    user: User,
+    data: {
+      name: string;
+      originalFileName: string;
+      mimeType: string;
+      fileSize: number;
+      storageKey: string;
+      checksum: string;
+      description?: string;
+      folderId?: string | null;
+      documentTypeId?: string | null;
+      ownerId?: string;
+      tags?: string[];
+      metadata?: Record<string, unknown>;
+    }
+  ): Document {
+    return this.createDocumentRecord(user, data);
   }
 
   public createDocumentRecord(
@@ -214,6 +240,15 @@ export class DocumentFolderService {
     );
 
     return updated;
+  }
+
+  public copyDocument(
+    user: User,
+    documentId: string,
+    newName?: string,
+    targetFolderId?: string | null
+  ): Document {
+    return this.copyDocumentRecord(user, documentId, targetFolderId, newName);
   }
 
   public copyDocumentRecord(
@@ -333,9 +368,16 @@ export class DocumentFolderService {
     return dt;
   }
 
-  public createDocumentType(user: User, name: string, description?: string): DocumentType {
+  public createDocumentType(
+    user: User,
+    nameOrData: string | { name: string; description?: string },
+    descriptionParam?: string
+  ): DocumentType {
     rbacService.assertPermission(user, 'documents.create');
     const orgId = user.organizationId!;
+
+    const name = typeof nameOrData === 'string' ? nameOrData : nameOrData.name;
+    const description = typeof nameOrData === 'string' ? descriptionParam : nameOrData.description;
 
     const dt = documentStore.createDocumentType(orgId, name, description);
 
@@ -349,6 +391,20 @@ export class DocumentFolderService {
     );
 
     return dt;
+  }
+
+  public addFieldDefinition(
+    user: User,
+    documentTypeId: string,
+    data: {
+      name: string;
+      key: string;
+      type: DocumentFieldDefinition['type'];
+      required?: boolean;
+      options?: string[] | null;
+    }
+  ): DocumentFieldDefinition {
+    return this.createFieldDefinition(user, documentTypeId, data);
   }
 
   public createFieldDefinition(
@@ -407,11 +463,12 @@ export class DocumentFolderService {
     return tag;
   }
 
-  public assignTag(user: User, documentId: string, tagId: string): void {
+  public assignTag(user: User, documentId: string, tagId: string): Document {
     rbacService.assertPermission(user, 'documents.update');
     const orgId = user.organizationId!;
 
     documentStore.assignTag(orgId, documentId, tagId);
+    const doc = documentStore.getDocumentById(orgId, documentId)!;
 
     store.recordAuditLog(
       orgId,
@@ -421,6 +478,8 @@ export class DocumentFolderService {
       `${documentId}:${tagId}`,
       { documentId, tagId }
     );
+
+    return doc;
   }
 
   public removeTag(user: User, documentId: string, tagId: string): void {

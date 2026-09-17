@@ -43,12 +43,12 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, isPhase1: true },
-  { id: 'documents', label: 'Documents', icon: FileText, isPhase1: false, badge: 'Phase 2' },
-  { id: 'workflows', label: 'Workflows', icon: GitFork, isPhase1: false, badge: 'Phase 2' },
-  { id: 'tasks', label: 'Tasks', icon: CheckSquare, isPhase1: false, badge: 'Phase 2' },
-  { id: 'approvals', label: 'Approvals', icon: FileCheck, isPhase1: false, badge: 'Phase 2' },
-  { id: 'search', label: 'Search', icon: Search, isPhase1: false, badge: 'Phase 2' },
-  { id: 'analytics', label: 'Analytics', icon: BarChart3, isPhase1: false, badge: 'Phase 2' },
+  { id: 'documents', label: 'Documents', icon: FileText, isPhase1: true, badge: 'Phase 2A' },
+  { id: 'workflows', label: 'Workflows', icon: GitFork, isPhase1: false, badge: 'Phase 2B' },
+  { id: 'tasks', label: 'Tasks', icon: CheckSquare, isPhase1: false, badge: 'Phase 2B' },
+  { id: 'approvals', label: 'Approvals', icon: FileCheck, isPhase1: false, badge: 'Phase 2B' },
+  { id: 'search', label: 'Search', icon: Search, isPhase1: false, badge: 'Phase 2B' },
+  { id: 'analytics', label: 'Analytics', icon: BarChart3, isPhase1: false, badge: 'Phase 2B' },
 ];
 
 export function Sidebar({

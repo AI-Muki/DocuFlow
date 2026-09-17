@@ -1,7 +1,17 @@
 import type { PermissionKey, SystemRole, User } from '../../types/index.ts';
 import { ROLE_DEFAULT_PERMISSIONS } from './permissions.ts';
+import { ForbiddenError } from '../../lib/errors.ts';
 
 export class RbacService {
+  /**
+   * Asserts that a user has a specific permission, throwing ForbiddenError if not.
+   */
+  public assertPermission(user: User, requiredPermission: PermissionKey): void {
+    if (!this.hasPermission(user, requiredPermission)) {
+      throw new ForbiddenError(`Permission Denied: Missing ${requiredPermission}`);
+    }
+  }
+
   /**
    * Evaluates whether a user has a specific permission.
    * Super Admins automatically inherit all permissions.

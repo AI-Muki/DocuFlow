@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 export const createFolderSchema = z.object({
   name: z.string().min(1, 'Folder name is required').max(100, 'Folder name too long').trim(),
-  parentFolderId: z.string().uuid().nullable().optional(),
+  parentFolderId: z.string().min(1).nullable().optional(),
 });
 
 export const renameFolderSchema = z.object({
@@ -10,7 +10,7 @@ export const renameFolderSchema = z.object({
 });
 
 export const moveFolderSchema = z.object({
-  targetParentFolderId: z.string().uuid().nullable(),
+  targetParentFolderId: z.string().min(1).nullable(),
 });
 
 export const createDocumentTypeSchema = z.object({
@@ -38,27 +38,27 @@ export const createDocumentRecordSchema = z.object({
   storageKey: z.string().min(1, 'Storage key is required'),
   checksum: z.string().min(1, 'Checksum is required'),
   description: z.string().max(1000).optional(),
-  folderId: z.string().uuid().nullable().optional(),
-  documentTypeId: z.string().uuid().nullable().optional(),
-  ownerId: z.string().uuid().optional(),
+  folderId: z.string().min(1).nullable().optional(),
+  documentTypeId: z.string().min(1).nullable().optional(),
+  ownerId: z.string().min(1).optional(),
   tags: z.array(z.string()).optional(),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
 export const updateDocumentSchema = z.object({
   name: z.string().min(1).max(255).trim().optional(),
   description: z.string().max(1000).nullable().optional(),
-  documentTypeId: z.string().uuid().nullable().optional(),
-  ownerId: z.string().uuid().optional(),
+  documentTypeId: z.string().min(1).nullable().optional(),
+  ownerId: z.string().min(1).optional(),
   status: z.enum(['ACTIVE', 'ARCHIVED', 'PENDING_PROCESSING', 'PROCESSING', 'PROCESSING_FAILED', 'DELETED']).optional(),
 });
 
 export const moveDocumentSchema = z.object({
-  targetFolderId: z.string().uuid().nullable(),
+  targetFolderId: z.string().min(1).nullable(),
 });
 
 export const copyDocumentSchema = z.object({
-  targetFolderId: z.string().uuid().nullable().optional(),
+  targetFolderId: z.string().min(1).nullable().optional(),
   newName: z.string().min(1).max(255).trim().optional(),
 });
 
@@ -72,9 +72,9 @@ export const createDocumentVersionSchema = z.object({
 });
 
 export const setDocumentMetadataSchema = z.object({
-  metadata: z.record(z.unknown()),
+  metadata: z.record(z.string(), z.unknown()),
 });
 
 export const assignTagSchema = z.object({
-  tagId: z.string().uuid(),
+  tagId: z.string().min(1),
 });

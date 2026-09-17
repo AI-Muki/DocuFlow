@@ -89,7 +89,11 @@ export function AppShell({ user, organization, onLogout, onOrganizationUpdated }
             />
           )}
 
-          {currentSection !== 'dashboard' && currentSection !== 'settings' && (
+          {currentSection === 'documents' && (
+            <DocumentsView user={user} />
+          )}
+
+          {currentSection !== 'dashboard' && currentSection !== 'settings' && currentSection !== 'documents' && (
             <ComingSoonView
               section={currentSection}
               onBackToDashboard={() => setCurrentSection('dashboard')}

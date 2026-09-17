@@ -362,6 +362,20 @@ export class DocumentStoreExtension {
     return folder;
   }
 
+  public getFolderPath(organizationId: string, folderId: string): Folder[] {
+    const path: Folder[] = [];
+    let currentId: string | null = folderId;
+
+    while (currentId) {
+      const folder = this.getFolderById(organizationId, currentId);
+      if (!folder) break;
+      path.unshift(folder);
+      currentId = folder.parentFolderId;
+    }
+
+    return path;
+  }
+
   public deleteFolder(organizationId: string, folderId: string): void {
     const folder = this.getFolderById(organizationId, folderId);
     if (!folder) {
