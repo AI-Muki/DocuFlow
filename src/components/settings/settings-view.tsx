@@ -24,6 +24,7 @@ import { Tabs } from '../ui/tabs.tsx';
 import { useToast } from '../ui/toast.tsx';
 import { formatDateTime } from '../../lib/utils.ts';
 import { ROLE_DEFAULT_PERMISSIONS, SYSTEM_PERMISSIONS } from '../../modules/rbac/permissions.ts';
+import { DocumentTypesManager } from '../documents/document-types-manager.tsx';
 
 export interface SettingsViewProps {
   user: User;
@@ -229,6 +230,7 @@ export function SettingsView({ user, organization, initialTab = 'general', onOrg
 
   const tabsConfig = [
     { id: 'general', label: 'General', icon: <Building2 className="h-4 w-4" /> },
+    { id: 'document-types', label: 'Document Types', icon: <FileCheck className="h-4 w-4" /> },
     { id: 'users', label: 'Users & Directory', count: users.length, icon: <Users className="h-4 w-4" /> },
     { id: 'roles', label: 'Roles & Permissions', count: 4, icon: <Shield className="h-4 w-4" /> },
     { id: 'departments', label: 'Departments', count: departments.length, icon: <Layers className="h-4 w-4" /> },
@@ -325,6 +327,13 @@ export function SettingsView({ user, organization, initialTab = 'general', onOrg
             </Card>
           </div>
         </div>
+      )}
+
+      {/* ------------------------------------------------------------------ */}
+      {/* DOCUMENT TYPES & METADATA TAB */}
+      {/* ------------------------------------------------------------------ */}
+      {activeTab === 'document-types' && (
+        <DocumentTypesManager canManage={canManageOrg} />
       )}
 
       {/* ------------------------------------------------------------------ */}

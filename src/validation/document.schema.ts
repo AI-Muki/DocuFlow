@@ -18,12 +18,33 @@ export const createDocumentTypeSchema = z.object({
   description: z.string().max(500).optional(),
 });
 
+export const updateDocumentTypeSchema = z.object({
+  name: z.string().min(1, 'Document type name is required').max(100).trim().optional(),
+  description: z.string().max(500).nullable().optional(),
+});
+
 export const createFieldDefinitionSchema = z.object({
   name: z.string().min(1, 'Field name is required').max(100).trim(),
   key: z.string().min(1, 'Field key is required').max(50).regex(/^[a-zA-Z0-9_-]+$/, 'Field key must be alphanumeric or dashes/underscores'),
   type: z.enum(['TEXT', 'NUMBER', 'DATE', 'BOOLEAN', 'SELECT', 'MULTI_SELECT']),
   required: z.boolean().default(false),
   options: z.array(z.string()).optional(),
+  order: z.number().int().optional(),
+});
+
+export const updateFieldDefinitionSchema = z.object({
+  name: z.string().min(1, 'Field name is required').max(100).trim().optional(),
+  type: z.enum(['TEXT', 'NUMBER', 'DATE', 'BOOLEAN', 'SELECT', 'MULTI_SELECT']).optional(),
+  required: z.boolean().optional(),
+  options: z.array(z.string()).nullable().optional(),
+  order: z.number().int().optional(),
+});
+
+export const bulkDocumentActionSchema = z.object({
+  action: z.enum(['add-tag', 'remove-tag', 'move', 'delete', 'archive']),
+  documentIds: z.array(z.string().min(1)).min(1, 'At least one document must be selected'),
+  tagId: z.string().optional(),
+  targetFolderId: z.string().nullable().optional(),
 });
 
 export const createTagSchema = z.object({

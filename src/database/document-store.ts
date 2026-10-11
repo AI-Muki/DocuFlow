@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import type {
   Document,
+  DocumentComment,
   DocumentFieldDefinition,
   DocumentFieldValue,
   DocumentStatus,
@@ -11,7 +12,7 @@ import type {
   Tag,
   User,
 } from '../types/index.ts';
-import { ConflictError, NotFoundError, TenantViolationError, ValidationError } from '../lib/errors.ts';
+import { ConflictError, ForbiddenError, NotFoundError, TenantViolationError, ValidationError } from '../lib/errors.ts';
 import { validateFieldValue, validateMetadataRecord } from '../modules/documents/metadata-validator.ts';
 
 export class DocumentStoreExtension {
@@ -23,6 +24,8 @@ export class DocumentStoreExtension {
   private fieldValues: Map<string, DocumentFieldValue> = new Map(); // documentId:fieldDefId -> DocumentFieldValue
   private tags: Map<string, Tag> = new Map();
   private documentTags: Map<string, Set<string>> = new Map(); // documentId -> Set of tagIds
+  private documentFavorites: Map<string, Set<string>> = new Map(); // documentId -> Set of userIds
+  private documentComments: Map<string, DocumentComment[]> = new Map(); // documentId -> DocumentComment[]
 
   private generateId(prefix?: string): string {
     const raw = randomUUID();
@@ -75,20 +78,23 @@ export class DocumentStoreExtension {
         name: 'Invoice',
         description: 'Vendor invoices and billing notices',
         fields: [
-          { name: 'Invoice Number', key: 'invoiceNumber', type: 'TEXT' as const, required: true },
-          { name: 'Due Date', key: 'dueDate', type: 'DATE' as const, required: true },
-          { name: 'Total Amount', key: 'totalAmount', type: 'NUMBER' as const, required: true },
-          { name: 'Currency', key: 'currency', type: 'SELECT' as const, required: true, options: ['USD', 'EUR', 'GBP', 'CAD'] },
+          { name: 'Invoice Number', key: 'invoiceNumber', type: 'TEXT' as const, required: true, order: 1 },
+          { name: 'Supplier', key: 'supplier', type: 'TEXT' as const, required: true, order: 2 },
+          { name: 'Invoice Date', key: 'invoiceDate', type: 'DATE' as const, required: true, order: 3 },
+          { name: 'Due Date', key: 'dueDate', type: 'DATE' as const, required: true, order: 4 },
+          { name: 'Amount', key: 'amount', type: 'NUMBER' as const, required: true, order: 5 },
+          { name: 'Currency', key: 'currency', type: 'SELECT' as const, required: true, options: ['USD', 'EUR', 'GBP', 'CAD'], order: 6 },
         ],
       },
       {
         name: 'Contract',
         description: 'Legal agreements, NDAs, and master service agreements',
         fields: [
-          { name: 'Contract Title', key: 'contractTitle', type: 'TEXT' as const, required: true },
-          { name: 'Counterparty', key: 'counterparty', type: 'TEXT' as const, required: true },
-          { name: 'Effective Date', key: 'effectiveDate', type: 'DATE' as const, required: true },
-          { name: 'Auto Renew', key: 'autoRenew', type: 'BOOLEAN' as const, required: false },
+          { name: 'Contract Number', key: 'contractNumber', type: 'TEXT' as const, required: true, order: 1 },
+          { name: 'Counterparty', key: 'counterparty', type: 'TEXT' as const, required: true, order: 2 },
+          { name: 'Start Date', key: 'startDate', type: 'DATE' as const, required: true, order: 3 },
+          { name: 'End Date', key: 'endDate', type: 'DATE' as const, required: true, order: 4 },
+          { name: 'Contract Value', key: 'contractValue', type: 'NUMBER' as const, required: true, order: 5 },
         ],
       },
       {
@@ -135,7 +141,7 @@ export class DocumentStoreExtension {
       createdDocTypes[dtData.name] = docType;
 
       // Seed field definitions
-      dtData.fields.forEach((f) => {
+      dtData.fields.forEach((f, idx) => {
         const fieldId = this.generateId('field');
         const fieldDef: DocumentFieldDefinition = {
           id: fieldId,
@@ -146,6 +152,7 @@ export class DocumentStoreExtension {
           type: f.type,
           required: f.required,
           options: f.options || null,
+          order: 'order' in f && typeof (f as { order?: number }).order === 'number' ? (f as { order: number }).order : idx + 1,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         };
@@ -452,10 +459,68 @@ export class DocumentStoreExtension {
     return { ...docType, fields: [] };
   }
 
+  public updateDocumentType(
+    organizationId: string,
+    id: string,
+    data: { name?: string; description?: string | null }
+  ): DocumentType {
+    const dt = this.documentTypes.get(id);
+    if (!dt || dt.organizationId !== organizationId) {
+      throw new NotFoundError('Document type');
+    }
+
+    if (data.name !== undefined) {
+      const trimmed = data.name.trim();
+      const existing = Array.from(this.documentTypes.values()).find(
+        (t) => t.id !== id && t.organizationId === organizationId && t.name.toLowerCase() === trimmed.toLowerCase()
+      );
+      if (existing) {
+        throw new ConflictError(`Document type "${trimmed}" already exists`);
+      }
+      dt.name = trimmed;
+    }
+
+    if (data.description !== undefined) {
+      dt.description = data.description;
+    }
+
+    dt.updatedAt = new Date().toISOString();
+    return {
+      ...dt,
+      fields: this.getFieldDefinitions(organizationId, id),
+    };
+  }
+
+  public deleteDocumentType(organizationId: string, id: string): void {
+    const dt = this.documentTypes.get(id);
+    if (!dt || dt.organizationId !== organizationId) {
+      throw new NotFoundError('Document type');
+    }
+
+    // Safety check: is it in use by any non-deleted document?
+    const inUseCount = Array.from(this.documents.values()).filter(
+      (doc) => doc.organizationId === organizationId && doc.documentTypeId === id && doc.deletedAt === null
+    ).length;
+
+    if (inUseCount > 0) {
+      throw new ConflictError(
+        `Cannot delete document type "${dt.name}": it is currently assigned to ${inUseCount} document(s). Reclassify or delete those documents first.`
+      );
+    }
+
+    // Delete field definitions for this type
+    const fieldDefs = this.getFieldDefinitions(organizationId, id);
+    fieldDefs.forEach((f) => {
+      this.fieldDefinitions.delete(f.id);
+    });
+
+    this.documentTypes.delete(id);
+  }
+
   public getFieldDefinitions(organizationId: string, documentTypeId: string): DocumentFieldDefinition[] {
-    return Array.from(this.fieldDefinitions.values()).filter(
-      (fd) => fd.organizationId === organizationId && fd.documentTypeId === documentTypeId
-    );
+    return Array.from(this.fieldDefinitions.values())
+      .filter((fd) => fd.organizationId === organizationId && fd.documentTypeId === documentTypeId)
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   }
 
   public createFieldDefinition(
@@ -467,6 +532,7 @@ export class DocumentStoreExtension {
       type: DocumentFieldDefinition['type'];
       required?: boolean;
       options?: string[] | null;
+      order?: number;
     }
   ): DocumentFieldDefinition {
     const docType = this.getDocumentTypeById(organizationId, documentTypeId);
@@ -481,6 +547,9 @@ export class DocumentStoreExtension {
       throw new ConflictError(`Field key "${data.key.trim()}" already exists for this document type`);
     }
 
+    const currentFields = this.getFieldDefinitions(organizationId, documentTypeId);
+    const order = data.order !== undefined ? data.order : currentFields.length + 1;
+
     const id = this.generateId('field');
     const fieldDef: DocumentFieldDefinition = {
       id,
@@ -491,12 +560,56 @@ export class DocumentStoreExtension {
       type: data.type,
       required: Boolean(data.required),
       options: data.options || null,
+      order,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
 
     this.fieldDefinitions.set(id, fieldDef);
     return fieldDef;
+  }
+
+  public updateFieldDefinition(
+    organizationId: string,
+    documentTypeId: string,
+    fieldId: string,
+    data: {
+      name?: string;
+      type?: DocumentFieldDefinition['type'];
+      required?: boolean;
+      options?: string[] | null;
+      order?: number;
+    }
+  ): DocumentFieldDefinition {
+    const field = this.fieldDefinitions.get(fieldId);
+    if (!field || field.organizationId !== organizationId || field.documentTypeId !== documentTypeId) {
+      throw new NotFoundError('Field definition');
+    }
+
+    if (data.name !== undefined) field.name = data.name.trim();
+    if (data.type !== undefined) field.type = data.type;
+    if (data.required !== undefined) field.required = Boolean(data.required);
+    if (data.options !== undefined) field.options = data.options;
+    if (data.order !== undefined) field.order = data.order;
+    field.updatedAt = new Date().toISOString();
+
+    return field;
+  }
+
+  public deleteFieldDefinition(organizationId: string, documentTypeId: string, fieldId: string): void {
+    const field = this.fieldDefinitions.get(fieldId);
+    if (!field || field.organizationId !== organizationId || field.documentTypeId !== documentTypeId) {
+      throw new NotFoundError('Field definition');
+    }
+
+    // Remove any saved field values for this field definition
+    for (const [key, fv] of this.fieldValues.entries()) {
+      if (fv.fieldDefinitionId === fieldId) {
+        this.fieldValues.delete(key);
+      }
+    }
+
+    this.fieldDefinitions.delete(fieldId);
   }
 
   // --------------------------------------------------------------------
@@ -524,6 +637,23 @@ export class DocumentStoreExtension {
     };
     this.tags.set(id, tag);
     return tag;
+  }
+
+  public deleteTag(organizationId: string, tagId: string): void {
+    const tag = this.tags.get(tagId);
+    if (!tag || tag.organizationId !== organizationId) {
+      throw new NotFoundError('Tag');
+    }
+
+    // Remove tag from all documents in org
+    for (const [docId, tagSet] of this.documentTags.entries()) {
+      const doc = this.documents.get(docId);
+      if (doc && doc.organizationId === organizationId) {
+        tagSet.delete(tagId);
+      }
+    }
+
+    this.tags.delete(tagId);
   }
 
   public assignTag(organizationId: string, documentId: string, tagId: string): void {
@@ -559,12 +689,15 @@ export class DocumentStoreExtension {
   // Document Operations & Versioning
   // --------------------------------------------------------------------
 
-  public getDocumentById(organizationId: string, id: string): Document | null {
+  public getDocumentById(organizationId: string, id: string, userId?: string, includeDeleted = false): Document | null {
     const doc = this.documents.get(id);
-    if (!doc || doc.organizationId !== organizationId || doc.deletedAt !== null) {
+    if (!doc || doc.organizationId !== organizationId) {
       return null;
     }
-    return this.hydrateDocument(doc);
+    if (!includeDeleted && doc.deletedAt !== null) {
+      return null;
+    }
+    return this.hydrateDocument(doc, userId);
   }
 
   public getDocuments(
@@ -575,16 +708,52 @@ export class DocumentStoreExtension {
       status?: DocumentStatus;
       ownerId?: string;
       search?: string;
+      view?: 'all' | 'favorites' | 'recent' | 'trash';
+      userId?: string;
+      tagId?: string;
+      tag?: string;
     }
   ): Document[] {
     const list = Array.from(this.documents.values()).filter((doc) => {
-      if (doc.organizationId !== organizationId || doc.deletedAt !== null) return false;
+      if (doc.organizationId !== organizationId) return false;
+
+      if (filter?.view === 'trash') {
+        if (doc.deletedAt === null) return false;
+      } else {
+        if (doc.deletedAt !== null) return false;
+      }
 
       if (filter) {
-        if (filter.folderId !== undefined && doc.folderId !== filter.folderId) return false;
+        if (filter.view === 'favorites' && filter.userId) {
+          if (!this.isFavorite(doc.id, filter.userId)) return false;
+        }
+
+        if (
+          filter.folderId !== undefined &&
+          filter.view !== 'trash' &&
+          filter.view !== 'favorites' &&
+          filter.view !== 'recent'
+        ) {
+          if (doc.folderId !== filter.folderId) return false;
+        }
         if (filter.documentTypeId && doc.documentTypeId !== filter.documentTypeId) return false;
         if (filter.status && doc.status !== filter.status) return false;
         if (filter.ownerId && doc.ownerId !== filter.ownerId) return false;
+
+        // Tag filter
+        if (filter.tagId) {
+          const docTags = this.documentTags.get(doc.id);
+          if (!docTags || !docTags.has(filter.tagId)) return false;
+        }
+        if (filter.tag) {
+          const docTags = this.documentTags.get(doc.id);
+          if (!docTags || docTags.size === 0) return false;
+          const matchTag = Array.from(docTags)
+            .map((tId) => this.tags.get(tId))
+            .find((t) => t && (t.id === filter.tag || t.name.toLowerCase() === filter.tag!.toLowerCase()));
+          if (!matchTag) return false;
+        }
+
         if (filter.search) {
           const s = filter.search.toLowerCase();
           const match =
@@ -598,7 +767,98 @@ export class DocumentStoreExtension {
       return true;
     });
 
-    return list.map((d) => this.hydrateDocument(d));
+    if (filter?.view === 'recent') {
+      list.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    }
+
+    return list.map((d) => this.hydrateDocument(d, filter?.userId));
+  }
+
+  // --------------------------------------------------------------------
+  // Bulk Document Operations
+  // --------------------------------------------------------------------
+
+  public bulkAddTag(organizationId: string, documentIds: string[], tagId: string): number {
+    const tag = this.tags.get(tagId);
+    if (!tag || tag.organizationId !== organizationId) {
+      throw new NotFoundError('Tag');
+    }
+
+    let affected = 0;
+    for (const docId of documentIds) {
+      const doc = this.documents.get(docId);
+      if (doc && doc.organizationId === organizationId && doc.deletedAt === null) {
+        if (!this.documentTags.has(docId)) {
+          this.documentTags.set(docId, new Set());
+        }
+        this.documentTags.get(docId)!.add(tagId);
+        doc.updatedAt = new Date().toISOString();
+        affected++;
+      }
+    }
+    return affected;
+  }
+
+  public bulkRemoveTag(organizationId: string, documentIds: string[], tagId: string): number {
+    let affected = 0;
+    for (const docId of documentIds) {
+      const doc = this.documents.get(docId);
+      if (doc && doc.organizationId === organizationId && doc.deletedAt === null) {
+        const set = this.documentTags.get(docId);
+        if (set && set.has(tagId)) {
+          set.delete(tagId);
+          doc.updatedAt = new Date().toISOString();
+          affected++;
+        }
+      }
+    }
+    return affected;
+  }
+
+  public bulkMove(organizationId: string, documentIds: string[], targetFolderId: string | null): number {
+    if (targetFolderId) {
+      const folder = this.getFolderById(organizationId, targetFolderId);
+      if (!folder) throw new NotFoundError('Target folder');
+    }
+
+    let affected = 0;
+    for (const docId of documentIds) {
+      const doc = this.documents.get(docId);
+      if (doc && doc.organizationId === organizationId && doc.deletedAt === null) {
+        doc.folderId = targetFolderId;
+        doc.updatedAt = new Date().toISOString();
+        affected++;
+      }
+    }
+    return affected;
+  }
+
+  public bulkDelete(organizationId: string, documentIds: string[]): number {
+    const now = new Date().toISOString();
+    let affected = 0;
+    for (const docId of documentIds) {
+      const doc = this.documents.get(docId);
+      if (doc && doc.organizationId === organizationId && doc.deletedAt === null) {
+        doc.deletedAt = now;
+        doc.status = 'DELETED';
+        doc.updatedAt = now;
+        affected++;
+      }
+    }
+    return affected;
+  }
+
+  public bulkArchive(organizationId: string, documentIds: string[]): number {
+    let affected = 0;
+    for (const docId of documentIds) {
+      const doc = this.documents.get(docId);
+      if (doc && doc.organizationId === organizationId && doc.deletedAt === null) {
+        doc.status = 'ARCHIVED';
+        doc.updatedAt = new Date().toISOString();
+        affected++;
+      }
+    }
+    return affected;
   }
 
   public createDocumentRecord(
@@ -800,6 +1060,126 @@ export class DocumentStoreExtension {
     doc.updatedAt = now;
   }
 
+  public restoreDocument(organizationId: string, documentId: string, userId?: string): Document {
+    const doc = this.documents.get(documentId);
+    if (!doc || doc.organizationId !== organizationId) {
+      throw new NotFoundError('Document');
+    }
+
+    doc.deletedAt = null;
+    doc.status = 'ACTIVE';
+    doc.updatedAt = new Date().toISOString();
+    return this.hydrateDocument(doc, userId);
+  }
+
+  public purgeDocument(organizationId: string, documentId: string): void {
+    const doc = this.documents.get(documentId);
+    if (!doc || doc.organizationId !== organizationId) {
+      throw new NotFoundError('Document');
+    }
+
+    this.documents.delete(documentId);
+    this.documentVersions.delete(documentId);
+    this.documentTags.delete(documentId);
+    this.documentFavorites.delete(documentId);
+    this.documentComments.delete(documentId);
+  }
+
+  public toggleFavorite(organizationId: string, documentId: string, userId: string): boolean {
+    const doc = this.documents.get(documentId);
+    if (!doc || doc.organizationId !== organizationId || doc.deletedAt !== null) {
+      throw new NotFoundError('Document');
+    }
+
+    let userSet = this.documentFavorites.get(documentId);
+    if (!userSet) {
+      userSet = new Set<string>();
+      this.documentFavorites.set(documentId, userSet);
+    }
+
+    if (userSet.has(userId)) {
+      userSet.delete(userId);
+      return false;
+    } else {
+      userSet.add(userId);
+      return true;
+    }
+  }
+
+  public isFavorite(documentId: string, userId: string): boolean {
+    const userSet = this.documentFavorites.get(documentId);
+    return userSet ? userSet.has(userId) : false;
+  }
+
+  public getDocumentComments(organizationId: string, documentId: string): DocumentComment[] {
+    const doc = this.documents.get(documentId);
+    if (!doc || doc.organizationId !== organizationId) {
+      throw new NotFoundError('Document');
+    }
+
+    const comments = this.documentComments.get(documentId) || [];
+    return [...comments].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  }
+
+  public addDocumentComment(
+    organizationId: string,
+    documentId: string,
+    user: { id: string; firstName: string; lastName: string; email: string },
+    content: string
+  ): DocumentComment {
+    const doc = this.documents.get(documentId);
+    if (!doc || doc.organizationId !== organizationId || doc.deletedAt !== null) {
+      throw new NotFoundError('Document');
+    }
+
+    const trimmed = content.trim();
+    if (!trimmed) {
+      throw new ValidationError('Comment content cannot be empty');
+    }
+
+    const comment: DocumentComment = {
+      id: this.generateId('comment'),
+      organizationId,
+      documentId,
+      userId: user.id,
+      userName: `${user.firstName} ${user.lastName}`.trim() || user.email,
+      userEmail: user.email,
+      content: trimmed,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    let list = this.documentComments.get(documentId);
+    if (!list) {
+      list = [];
+      this.documentComments.set(documentId, list);
+    }
+    list.push(comment);
+    return comment;
+  }
+
+  public deleteDocumentComment(organizationId: string, documentId: string, commentId: string, userId: string): void {
+    const doc = this.documents.get(documentId);
+    if (!doc || doc.organizationId !== organizationId) {
+      throw new NotFoundError('Document');
+    }
+
+    const list = this.documentComments.get(documentId) || [];
+    const comment = list.find((c) => c.id === commentId);
+    if (!comment) {
+      throw new NotFoundError('Comment');
+    }
+
+    if (comment.userId !== userId) {
+      throw new ForbiddenError('You can only delete your own comments');
+    }
+
+    this.documentComments.set(
+      documentId,
+      list.filter((c) => c.id !== commentId)
+    );
+  }
+
   // --------------------------------------------------------------------
   // Document Versions
   // --------------------------------------------------------------------
@@ -917,9 +1297,12 @@ export class DocumentStoreExtension {
   // Metadata Operations
   // --------------------------------------------------------------------
 
-  public getDocumentMetadata(organizationId: string, documentId: string): Record<string, unknown> {
+  public getDocumentMetadata(organizationId: string, documentId: string, includeDeleted = false): Record<string, unknown> {
     const doc = this.documents.get(documentId);
-    if (!doc || doc.organizationId !== organizationId || doc.deletedAt !== null) {
+    if (!doc || doc.organizationId !== organizationId) {
+      throw new NotFoundError('Document');
+    }
+    if (!includeDeleted && doc.deletedAt !== null) {
       throw new NotFoundError('Document');
     }
 
@@ -981,7 +1364,7 @@ export class DocumentStoreExtension {
   // --------------------------------------------------------------------
   // Helper: Hydrate document with relations
   // --------------------------------------------------------------------
-  private hydrateDocument(doc: Document): Document {
+  private hydrateDocument(doc: Document, userId?: string): Document {
     const folder = doc.folderId ? this.folders.get(doc.folderId) || null : null;
     const documentType = doc.documentTypeId ? this.documentTypes.get(doc.documentTypeId) || null : null;
 
@@ -991,10 +1374,12 @@ export class DocumentStoreExtension {
       .filter((t): t is Tag => Boolean(t));
 
     const versions = this.documentVersions.get(doc.id) || [];
-    const metadata = this.getDocumentMetadata(doc.organizationId, doc.id);
+    const metadata = this.getDocumentMetadata(doc.organizationId, doc.id, true);
+    const isFavorite = userId ? this.isFavorite(doc.id, userId) : false;
 
     return {
       ...doc,
+      isFavorite,
       folder,
       documentType,
       tags,

@@ -2,7 +2,9 @@
 import { documentStore } from '../../database/document-store.ts';
 import { store } from '../../database/store.ts';
 import type {
+  AuditLog,
   Document,
+  DocumentComment,
   DocumentFieldDefinition,
   DocumentStatus,
   DocumentType,
@@ -12,7 +14,7 @@ import type {
   User,
 } from '../../types/index.ts';
 import { rbacService } from '../rbac/rbac.service.ts';
-import { ForbiddenError, NotFoundError, TenantViolationError } from '../../lib/errors.ts';
+import { ForbiddenError, NotFoundError, TenantViolationError, ValidationError } from '../../lib/errors.ts';
 
 export class DocumentFolderService {
   // --------------------------------------------------------------------
@@ -125,17 +127,23 @@ export class DocumentFolderService {
       status?: DocumentStatus;
       ownerId?: string;
       search?: string;
+      view?: 'all' | 'favorites' | 'recent' | 'trash';
+      tagId?: string;
+      tag?: string;
     }
   ): Document[] {
     rbacService.assertPermission(user, 'documents.read');
     const orgId = user.organizationId!;
-    return documentStore.getDocuments(orgId, filter);
+    return documentStore.getDocuments(orgId, {
+      ...filter,
+      userId: user.id,
+    });
   }
 
-  public getDocumentById(user: User, documentId: string): Document {
+  public getDocumentById(user: User, documentId: string, includeDeleted = false): Document {
     rbacService.assertPermission(user, 'documents.read');
     const orgId = user.organizationId!;
-    const doc = documentStore.getDocumentById(orgId, documentId);
+    const doc = documentStore.getDocumentById(orgId, documentId, user.id, includeDeleted);
     if (!doc) {
       throw new NotFoundError('Document');
     }
@@ -393,6 +401,47 @@ export class DocumentFolderService {
     return dt;
   }
 
+  public updateDocumentType(
+    user: User,
+    id: string,
+    data: { name?: string; description?: string | null }
+  ): DocumentType {
+    rbacService.assertPermission(user, 'documents.update');
+    const orgId = user.organizationId!;
+
+    const updated = documentStore.updateDocumentType(orgId, id, data);
+
+    store.recordAuditLog(
+      orgId,
+      user.id,
+      'document_type.updated',
+      'DocumentType',
+      id,
+      { name: updated.name }
+    );
+
+    return updated;
+  }
+
+  public deleteDocumentType(user: User, id: string): void {
+    rbacService.assertPermission(user, 'documents.delete');
+    const orgId = user.organizationId!;
+
+    const dt = documentStore.getDocumentTypeById(orgId, id);
+    if (!dt) throw new NotFoundError('Document type');
+
+    documentStore.deleteDocumentType(orgId, id);
+
+    store.recordAuditLog(
+      orgId,
+      user.id,
+      'document_type.deleted',
+      'DocumentType',
+      id,
+      { name: dt.name }
+    );
+  }
+
   public addFieldDefinition(
     user: User,
     documentTypeId: string,
@@ -402,6 +451,7 @@ export class DocumentFolderService {
       type: DocumentFieldDefinition['type'];
       required?: boolean;
       options?: string[] | null;
+      order?: number;
     }
   ): DocumentFieldDefinition {
     return this.createFieldDefinition(user, documentTypeId, data);
@@ -416,6 +466,7 @@ export class DocumentFolderService {
       type: DocumentFieldDefinition['type'];
       required?: boolean;
       options?: string[] | null;
+      order?: number;
     }
   ): DocumentFieldDefinition {
     rbacService.assertPermission(user, 'documents.update');
@@ -429,10 +480,55 @@ export class DocumentFolderService {
       'document_field.created',
       'DocumentFieldDefinition',
       field.id,
+      { documentTypeId, key: field.key, type: field.type, order: field.order }
+    );
+
+    return field;
+  }
+
+  public updateFieldDefinition(
+    user: User,
+    documentTypeId: string,
+    fieldId: string,
+    data: {
+      name?: string;
+      type?: DocumentFieldDefinition['type'];
+      required?: boolean;
+      options?: string[] | null;
+      order?: number;
+    }
+  ): DocumentFieldDefinition {
+    rbacService.assertPermission(user, 'documents.update');
+    const orgId = user.organizationId!;
+
+    const field = documentStore.updateFieldDefinition(orgId, documentTypeId, fieldId, data);
+
+    store.recordAuditLog(
+      orgId,
+      user.id,
+      'document_field.updated',
+      'DocumentFieldDefinition',
+      fieldId,
       { documentTypeId, key: field.key, type: field.type }
     );
 
     return field;
+  }
+
+  public deleteFieldDefinition(user: User, documentTypeId: string, fieldId: string): void {
+    rbacService.assertPermission(user, 'documents.update');
+    const orgId = user.organizationId!;
+
+    documentStore.deleteFieldDefinition(orgId, documentTypeId, fieldId);
+
+    store.recordAuditLog(
+      orgId,
+      user.id,
+      'document_field.deleted',
+      'DocumentFieldDefinition',
+      fieldId,
+      { documentTypeId }
+    );
   }
 
   // --------------------------------------------------------------------
@@ -461,6 +557,22 @@ export class DocumentFolderService {
     );
 
     return tag;
+  }
+
+  public deleteTag(user: User, tagId: string): void {
+    rbacService.assertPermission(user, 'documents.update');
+    const orgId = user.organizationId!;
+
+    documentStore.deleteTag(orgId, tagId);
+
+    store.recordAuditLog(
+      orgId,
+      user.id,
+      'tag.deleted',
+      'Tag',
+      tagId,
+      {}
+    );
   }
 
   public assignTag(user: User, documentId: string, tagId: string): Document {
@@ -528,6 +640,173 @@ export class DocumentFolderService {
     );
 
     return validated;
+  }
+
+  // --------------------------------------------------------------------
+  // Phase 2C: Favorites, Trash, Comments & Activity
+  // --------------------------------------------------------------------
+
+  public toggleFavorite(user: User, documentId: string): boolean {
+    rbacService.assertPermission(user, 'documents.read');
+    const orgId = user.organizationId!;
+
+    const isFav = documentStore.toggleFavorite(orgId, documentId, user.id);
+
+    store.recordAuditLog(
+      orgId,
+      user.id,
+      isFav ? 'document.favorited' : 'document.unfavorited',
+      'Document',
+      documentId,
+      { isFavorite: isFav }
+    );
+
+    return isFav;
+  }
+
+  public restoreDocument(user: User, documentId: string): Document {
+    rbacService.assertPermission(user, 'documents.delete');
+    const orgId = user.organizationId!;
+
+    const restored = documentStore.restoreDocument(orgId, documentId, user.id);
+
+    store.recordAuditLog(
+      orgId,
+      user.id,
+      'document.restored',
+      'Document',
+      documentId,
+      { status: restored.status }
+    );
+
+    return restored;
+  }
+
+  public purgeDocument(user: User, documentId: string): void {
+    rbacService.assertPermission(user, 'documents.delete');
+    const orgId = user.organizationId!;
+
+    documentStore.purgeDocument(orgId, documentId);
+
+    store.recordAuditLog(
+      orgId,
+      user.id,
+      'document.purged',
+      'Document',
+      documentId,
+      { permanentlyDeleted: true }
+    );
+  }
+
+  public getDocumentComments(user: User, documentId: string): DocumentComment[] {
+    rbacService.assertPermission(user, 'documents.read');
+    const orgId = user.organizationId!;
+    return documentStore.getDocumentComments(orgId, documentId);
+  }
+
+  public addDocumentComment(user: User, documentId: string, content: string): DocumentComment {
+    rbacService.assertPermission(user, 'documents.read');
+    const orgId = user.organizationId!;
+
+    const comment = documentStore.addDocumentComment(orgId, documentId, user, content);
+
+    store.recordAuditLog(
+      orgId,
+      user.id,
+      'document_comment.created',
+      'Document',
+      documentId,
+      { commentId: comment.id }
+    );
+
+    return comment;
+  }
+
+  public deleteDocumentComment(user: User, documentId: string, commentId: string): void {
+    rbacService.assertPermission(user, 'documents.read');
+    const orgId = user.organizationId!;
+
+    documentStore.deleteDocumentComment(orgId, documentId, commentId, user.id);
+
+    store.recordAuditLog(
+      orgId,
+      user.id,
+      'document_comment.deleted',
+      'Document',
+      documentId,
+      { commentId }
+    );
+  }
+
+  public getDocumentActivity(user: User, documentId: string): AuditLog[] {
+    rbacService.assertPermission(user, 'documents.read');
+    const orgId = user.organizationId!;
+
+    // Ensure document exists
+    this.getDocumentById(user, documentId, true);
+
+    const allLogs = store.getAuditLogsByOrganization(orgId, 200);
+    return allLogs
+      .filter((log) => log.entityId === documentId || (log.metadata && (log.metadata as Record<string, unknown>).documentId === documentId))
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+
+  public bulkAction(
+    user: User,
+    data: {
+      action: 'add-tag' | 'remove-tag' | 'move' | 'delete' | 'archive';
+      documentIds: string[];
+      tagId?: string;
+      targetFolderId?: string | null;
+    }
+  ): { success: boolean; affectedCount: number; action: string } {
+    const orgId = user.organizationId!;
+
+    let affectedCount = 0;
+    switch (data.action) {
+      case 'add-tag': {
+        rbacService.assertPermission(user, 'documents.update');
+        if (!data.tagId) throw new ValidationError('tagId is required for add-tag bulk action');
+        affectedCount = documentStore.bulkAddTag(orgId, data.documentIds, data.tagId);
+        break;
+      }
+      case 'remove-tag': {
+        rbacService.assertPermission(user, 'documents.update');
+        if (!data.tagId) throw new ValidationError('tagId is required for remove-tag bulk action');
+        affectedCount = documentStore.bulkRemoveTag(orgId, data.documentIds, data.tagId);
+        break;
+      }
+      case 'move': {
+        rbacService.assertPermission(user, 'documents.update');
+        affectedCount = documentStore.bulkMove(orgId, data.documentIds, data.targetFolderId ?? null);
+        break;
+      }
+      case 'delete': {
+        rbacService.assertPermission(user, 'documents.delete');
+        affectedCount = documentStore.bulkDelete(orgId, data.documentIds);
+        break;
+      }
+      case 'archive': {
+        rbacService.assertPermission(user, 'documents.update');
+        affectedCount = documentStore.bulkArchive(orgId, data.documentIds);
+        break;
+      }
+    }
+
+    store.recordAuditLog(
+      orgId,
+      user.id,
+      `document.bulk_${data.action.replace('-', '_')}`,
+      'Document',
+      orgId,
+      { documentIds: data.documentIds, affectedCount, action: data.action }
+    );
+
+    return {
+      success: true,
+      affectedCount,
+      action: data.action,
+    };
   }
 }
 

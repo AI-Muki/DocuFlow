@@ -179,6 +179,7 @@ export interface DocumentFieldDefinition {
   type: FieldType;
   required: boolean;
   options?: string[] | null;
+  order?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -234,6 +235,7 @@ export interface Document {
   updatedAt: string;
   deletedAt: string | null;
   // Hydrated details
+  isFavorite?: boolean;
   folder?: Folder | null;
   documentType?: DocumentType | null;
   tags?: Tag[];
@@ -242,5 +244,17 @@ export interface Document {
   fieldValues?: DocumentFieldValue[]; // raw field values
   owner?: User | null;
   createdBy?: User | null;
+}
+
+export interface DocumentComment {
+  id: string;
+  organizationId: string;
+  documentId: string;
+  userId: string;
+  userName: string;
+  userEmail: string;
+  content: string;
+  createdAt: string;
+  updatedAt: string;
 }
 

@@ -12,6 +12,7 @@ import { storageConfig } from '../storage/storage.config.ts';
 import { formatErrorResponse, ValidationError } from '../../lib/errors.ts';
 import {
   assignTagSchema,
+  bulkDocumentActionSchema,
   copyDocumentSchema,
   createDocumentRecordSchema,
   createDocumentTypeSchema,
@@ -24,6 +25,8 @@ import {
   renameFolderSchema,
   setDocumentMetadataSchema,
   updateDocumentSchema,
+  updateDocumentTypeSchema,
+  updateFieldDefinitionSchema,
 } from '../../validation/document.schema.ts';
 import type { DocumentStatus } from '../../types/index.ts';
 
@@ -184,6 +187,31 @@ documentRouter.post('/document-types', requirePermission('documents.create'), (r
   }
 });
 
+documentRouter.put('/document-types/:id', requirePermission('documents.update'), (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const parseResult = updateDocumentTypeSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      throw new ValidationError('Validation failed', parseResult.error.issues);
+    }
+
+    const updated = documentFolderService.updateDocumentType(req.user!, req.params.id, parseResult.data);
+    res.json({ success: true, data: updated });
+  } catch (err: unknown) {
+    const status = (err as { statusCode?: number }).statusCode || 400;
+    res.status(status).json(formatErrorResponse(err));
+  }
+});
+
+documentRouter.delete('/document-types/:id', requirePermission('documents.delete'), (req: AuthenticatedRequest, res: Response) => {
+  try {
+    documentFolderService.deleteDocumentType(req.user!, req.params.id);
+    res.json({ success: true, message: 'Document type deleted successfully' });
+  } catch (err: unknown) {
+    const status = (err as { statusCode?: number }).statusCode || 400;
+    res.status(status).json(formatErrorResponse(err));
+  }
+});
+
 documentRouter.post('/document-types/:id/fields', requirePermission('documents.update'), (req: AuthenticatedRequest, res: Response) => {
   try {
     const parseResult = createFieldDefinitionSchema.safeParse(req.body);
@@ -193,6 +221,36 @@ documentRouter.post('/document-types/:id/fields', requirePermission('documents.u
 
     const field = documentFolderService.createFieldDefinition(req.user!, req.params.id, parseResult.data);
     res.status(201).json({ success: true, data: field });
+  } catch (err: unknown) {
+    const status = (err as { statusCode?: number }).statusCode || 400;
+    res.status(status).json(formatErrorResponse(err));
+  }
+});
+
+documentRouter.put('/document-types/:id/fields/:fieldId', requirePermission('documents.update'), (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const parseResult = updateFieldDefinitionSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      throw new ValidationError('Validation failed', parseResult.error.issues);
+    }
+
+    const field = documentFolderService.updateFieldDefinition(
+      req.user!,
+      req.params.id,
+      req.params.fieldId,
+      parseResult.data
+    );
+    res.json({ success: true, data: field });
+  } catch (err: unknown) {
+    const status = (err as { statusCode?: number }).statusCode || 400;
+    res.status(status).json(formatErrorResponse(err));
+  }
+});
+
+documentRouter.delete('/document-types/:id/fields/:fieldId', requirePermission('documents.update'), (req: AuthenticatedRequest, res: Response) => {
+  try {
+    documentFolderService.deleteFieldDefinition(req.user!, req.params.id, req.params.fieldId);
+    res.json({ success: true, message: 'Field definition deleted successfully' });
   } catch (err: unknown) {
     const status = (err as { statusCode?: number }).statusCode || 400;
     res.status(status).json(formatErrorResponse(err));
@@ -227,6 +285,16 @@ documentRouter.post('/tags', requirePermission('documents.create'), (req: Authen
   }
 });
 
+documentRouter.delete('/tags/:id', requirePermission('documents.update'), (req: AuthenticatedRequest, res: Response) => {
+  try {
+    documentFolderService.deleteTag(req.user!, req.params.id);
+    res.json({ success: true, message: 'Tag deleted successfully' });
+  } catch (err: unknown) {
+    const status = (err as { statusCode?: number }).statusCode || 400;
+    res.status(status).json(formatErrorResponse(err));
+  }
+});
+
 // ----------------------------------------------------------------------
 // Documents API
 // ----------------------------------------------------------------------
@@ -243,12 +311,34 @@ documentRouter.get('/documents', (req: AuthenticatedRequest, res: Response) => {
       status: req.query.status ? (String(req.query.status) as DocumentStatus) : undefined,
       ownerId: req.query.ownerId ? String(req.query.ownerId) : undefined,
       search: req.query.search ? String(req.query.search) : undefined,
+      view: req.query.view ? (String(req.query.view) as 'all' | 'favorites' | 'recent' | 'trash') : undefined,
+      tagId: req.query.tagId ? String(req.query.tagId) : undefined,
+      tag: req.query.tag ? String(req.query.tag) : undefined,
     };
 
     const documents = documentFolderService.getDocuments(req.user!, filter);
     res.json({ success: true, data: documents });
   } catch (err: unknown) {
     res.status(500).json(formatErrorResponse(err));
+  }
+});
+
+// ----------------------------------------------------------------------
+// Bulk Document Operations API
+// ----------------------------------------------------------------------
+
+documentRouter.post('/documents/bulk', (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const parseResult = bulkDocumentActionSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      throw new ValidationError('Validation failed', parseResult.error.issues);
+    }
+
+    const result = documentFolderService.bulkAction(req.user!, parseResult.data);
+    res.json({ success: true, data: result });
+  } catch (err: unknown) {
+    const status = (err as { statusCode?: number }).statusCode || 400;
+    res.status(status).json(formatErrorResponse(err));
   }
 });
 
@@ -348,7 +438,8 @@ documentRouter.post(
 
 documentRouter.get('/documents/:id', (req: AuthenticatedRequest, res: Response) => {
   try {
-    const document = documentFolderService.getDocumentById(req.user!, req.params.id);
+    const includeDeleted = req.query.includeDeleted === 'true';
+    const document = documentFolderService.getDocumentById(req.user!, req.params.id, includeDeleted);
     res.json({ success: true, data: document });
   } catch (err: unknown) {
     const status = (err as { statusCode?: number }).statusCode || 404;
@@ -613,6 +704,95 @@ documentRouter.put('/documents/:id/metadata', requirePermission('documents.updat
     res.json({ success: true, data: updated });
   } catch (err: unknown) {
     const status = (err as { statusCode?: number }).statusCode || 400;
+    res.status(status).json(formatErrorResponse(err));
+  }
+});
+
+// ----------------------------------------------------------------------
+// Phase 2C: Favorites, Trash, Comments, Activity & Text Viewer
+// ----------------------------------------------------------------------
+
+documentRouter.post('/documents/:id/favorite', requirePermission('documents.read'), (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const isFavorite = documentFolderService.toggleFavorite(req.user!, req.params.id);
+    res.json({ success: true, isFavorite });
+  } catch (err: unknown) {
+    const status = (err as { statusCode?: number }).statusCode || 400;
+    res.status(status).json(formatErrorResponse(err));
+  }
+});
+
+documentRouter.post('/documents/:id/restore', requirePermission('documents.delete'), (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const restored = documentFolderService.restoreDocument(req.user!, req.params.id);
+    res.json({ success: true, data: restored, message: 'Document restored successfully' });
+  } catch (err: unknown) {
+    const status = (err as { statusCode?: number }).statusCode || 400;
+    res.status(status).json(formatErrorResponse(err));
+  }
+});
+
+documentRouter.delete('/documents/:id/permanent', requirePermission('documents.delete'), (req: AuthenticatedRequest, res: Response) => {
+  try {
+    documentFolderService.purgeDocument(req.user!, req.params.id);
+    res.json({ success: true, message: 'Document permanently deleted' });
+  } catch (err: unknown) {
+    const status = (err as { statusCode?: number }).statusCode || 400;
+    res.status(status).json(formatErrorResponse(err));
+  }
+});
+
+documentRouter.get('/documents/:id/comments', requirePermission('documents.read'), (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const comments = documentFolderService.getDocumentComments(req.user!, req.params.id);
+    res.json({ success: true, data: comments });
+  } catch (err: unknown) {
+    const status = (err as { statusCode?: number }).statusCode || 404;
+    res.status(status).json(formatErrorResponse(err));
+  }
+});
+
+documentRouter.post('/documents/:id/comments', requirePermission('documents.read'), (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const content = req.body?.content;
+    if (!content || typeof content !== 'string') {
+      throw new ValidationError('Content is required');
+    }
+    const comment = documentFolderService.addDocumentComment(req.user!, req.params.id, content);
+    res.status(201).json({ success: true, data: comment });
+  } catch (err: unknown) {
+    const status = (err as { statusCode?: number }).statusCode || 400;
+    res.status(status).json(formatErrorResponse(err));
+  }
+});
+
+documentRouter.delete('/documents/:id/comments/:commentId', requirePermission('documents.read'), (req: AuthenticatedRequest, res: Response) => {
+  try {
+    documentFolderService.deleteDocumentComment(req.user!, req.params.id, req.params.commentId);
+    res.json({ success: true, message: 'Comment deleted successfully' });
+  } catch (err: unknown) {
+    const status = (err as { statusCode?: number }).statusCode || 400;
+    res.status(status).json(formatErrorResponse(err));
+  }
+});
+
+documentRouter.get('/documents/:id/activity', requirePermission('documents.read'), (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const activity = documentFolderService.getDocumentActivity(req.user!, req.params.id);
+    res.json({ success: true, data: activity });
+  } catch (err: unknown) {
+    const status = (err as { statusCode?: number }).statusCode || 404;
+    res.status(status).json(formatErrorResponse(err));
+  }
+});
+
+documentRouter.get('/documents/:id/text-content', requirePermission('documents.read'), async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const download = await documentUploadService.downloadDocumentFile(req.user!, req.params.id);
+    const text = download.buffer.toString('utf-8');
+    res.json({ success: true, data: { text, fileName: download.fileName, mimeType: download.mimeType } });
+  } catch (err: unknown) {
+    const status = (err as { statusCode?: number }).statusCode || 404;
     res.status(status).json(formatErrorResponse(err));
   }
 });

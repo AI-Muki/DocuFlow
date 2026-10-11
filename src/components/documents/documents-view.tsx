@@ -21,15 +21,35 @@ import {
   Download,
   ExternalLink,
   Link2,
+  Star,
+  MessageSquare,
+  Clock,
+  RotateCcw,
+  Eye,
+  Send,
+  AlertTriangle,
+  FileCode2,
+  CheckSquare,
+  Square,
+  Archive,
+  Filter,
+  Check,
+  Sparkles,
+  LayoutGrid,
+  List,
+  X,
 } from 'lucide-react';
 import type {
   Document,
+  DocumentComment,
+  DocumentFieldDefinition,
   DocumentStatus,
   DocumentType,
   DocumentVersion,
   Folder,
   Tag,
   User,
+  AuditLog,
 } from '../../types/index.ts';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card.tsx';
 import { Button } from '../ui/button.tsx';
@@ -38,7 +58,9 @@ import { EmptyState } from '../ui/empty-state.tsx';
 import { Modal } from '../ui/modal.tsx';
 import { DocumentUploadModal } from './document-upload-modal.tsx';
 import { VersionUploadModal } from './version-upload-modal.tsx';
-import { formatDateTime } from '../../lib/utils.ts';
+import { TextViewerModal } from './text-viewer-modal.tsx';
+import { DocumentTypesManager } from './document-types-manager.tsx';
+import { formatDateTime, formatBytes, getInitials } from '../../lib/utils.ts';
 import { useToast } from '../ui/toast.tsx';
 
 export interface DocumentsViewProps {
@@ -49,7 +71,8 @@ export function DocumentsView({ user }: DocumentsViewProps) {
   const { addToast } = useToast();
   const [activeTab, setActiveTab] = useState<'explorer' | 'types' | 'tags'>('explorer');
 
-  // Explorer State
+  // Explorer & View Filter State
+  const [docView, setDocView] = useState<'explorer' | 'favorites' | 'recent' | 'trash'>('explorer');
   const [folders, setFolders] = useState<Folder[]>([]);
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
   const [folderPath, setFolderPath] = useState<Folder[]>([]);
@@ -57,12 +80,70 @@ export function DocumentsView({ user }: DocumentsViewProps) {
   const [documentTypes, setDocumentTypes] = useState<DocumentType[]>([]);
   const [tags, setTags] = useState<Tag[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedTagFilter, setSelectedTagFilter] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Selected Item for Detail / Version Drawer
+  // View Switcher (List vs Grid)
+  const [viewMode, setViewMode] = useState<'list' | 'grid'>(() => {
+    try {
+      return (localStorage.getItem('docuflow_doc_view_mode') as 'list' | 'grid') || 'list';
+    } catch {
+      return 'list';
+    }
+  });
+
+  const handleSetViewMode = (mode: 'list' | 'grid') => {
+    setViewMode(mode);
+    try {
+      localStorage.setItem('docuflow_doc_view_mode', mode);
+    } catch {}
+  };
+
+  // Phase 2D: Bulk Operations State
+  const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
+  const [isBulkAddTagOpen, setIsBulkAddTagOpen] = useState(false);
+  const [bulkTagId, setBulkTagId] = useState('');
+  const [isBulkRemoveTagOpen, setIsBulkRemoveTagOpen] = useState(false);
+  const [bulkRemoveTagId, setBulkRemoveTagId] = useState('');
+  const [isBulkMoveOpen, setIsBulkMoveOpen] = useState(false);
+  const [bulkTargetFolderId, setBulkTargetFolderId] = useState<string | null>(null);
+  const [isBulkDeleteOpen, setIsBulkDeleteOpen] = useState(false);
+  const [isBulkArchiveOpen, setIsBulkArchiveOpen] = useState(false);
+  const [isSubmittingBulk, setIsSubmittingBulk] = useState(false);
+
+  // Phase 2D: Document Metadata Editing State
+  const [isEditingMetadata, setIsEditingMetadata] = useState(false);
+  const [metadataFormValues, setMetadataFormValues] = useState<Record<string, unknown>>({});
+  const [metadataErrors, setMetadataErrors] = useState<Record<string, string>>({});
+  const [isSavingMetadata, setIsSavingMetadata] = useState(false);
+
+  // Phase 2D: Tag Management on Document & Global
+  const [isAddingDocTag, setIsAddingDocTag] = useState(false);
+  const [selectedDocTagId, setSelectedDocTagId] = useState('');
+  const [inlineNewTagName, setInlineNewTagName] = useState('');
+  const [tagToDelete, setTagToDelete] = useState<Tag | null>(null);
+  const [isDeleteTagOpen, setIsDeleteTagOpen] = useState(false);
+
+  // Selected Item for Detail / Drawer
   const [selectedDoc, setSelectedDoc] = useState<Document | null>(null);
+  const [drawerTab, setDrawerTab] = useState<'details' | 'versions' | 'comments' | 'activity'>('details');
   const [versions, setVersions] = useState<DocumentVersion[]>([]);
   const [isLoadingVersions, setIsLoadingVersions] = useState(false);
+
+  // Comments State
+  const [comments, setComments] = useState<DocumentComment[]>([]);
+  const [isLoadingComments, setIsLoadingComments] = useState(false);
+  const [newCommentText, setNewCommentText] = useState('');
+  const [isSubmittingComment, setIsSubmittingComment] = useState(false);
+
+  // Activity Log State
+  const [activityLogs, setActivityLogs] = useState<AuditLog[]>([]);
+  const [isLoadingActivity, setIsLoadingActivity] = useState(false);
+
+  // Text Viewer Modal State
+  const [isTextViewerOpen, setIsTextViewerOpen] = useState(false);
+  const [textViewerDocId, setTextViewerDocId] = useState<string | null>(null);
+  const [textViewerDocName, setTextViewerDocName] = useState<string>('');
 
   // Modals
   const [isCreateFolderOpen, setIsCreateFolderOpen] = useState(false);
@@ -111,12 +192,14 @@ export function DocumentsView({ user }: DocumentsViewProps) {
   const [isVersionUploadOpen, setIsVersionUploadOpen] = useState(false);
 
   // Fetch initial data
-  const fetchData = async () => {
+  const fetchData = async (overrideView?: 'explorer' | 'favorites' | 'recent' | 'trash') => {
     setIsLoading(true);
+    const viewToFetch = overrideView || docView;
     try {
+      const docsUrl = viewToFetch === 'explorer' ? '/api/documents' : `/api/documents?view=${viewToFetch}`;
       const [foldersRes, docsRes, typesRes, tagsRes] = await Promise.all([
         fetch('/api/folders'),
-        fetch('/api/documents'),
+        fetch(docsUrl),
         fetch('/api/document-types'),
         fetch('/api/tags'),
       ]);
@@ -132,7 +215,7 @@ export function DocumentsView({ user }: DocumentsViewProps) {
       if (docsData.success) setDocuments(docsData.data);
       if (typesData.success) setDocumentTypes(typesData.data);
       if (tagsData.success) setTags(tagsData.data);
-    } catch (err) {
+    } catch {
       addToast('Failed to load document system records', 'error');
     } finally {
       setIsLoading(false);
@@ -141,7 +224,7 @@ export function DocumentsView({ user }: DocumentsViewProps) {
 
   useEffect(() => {
     fetchData();
-  }, []);
+  }, [docView]);
 
   // Update folder breadcrumb path
   useEffect(() => {
@@ -158,9 +241,15 @@ export function DocumentsView({ user }: DocumentsViewProps) {
     setFolderPath(path);
   }, [currentFolderId, folders]);
 
-  // Load versions for selected document
-  const loadVersions = async (doc: Document) => {
+  // Load versions, comments, and activity for selected document
+  const selectDocument = async (doc: Document) => {
     setSelectedDoc(doc);
+    loadVersions(doc);
+    loadComments(doc.id);
+    loadActivity(doc.id);
+  };
+
+  const loadVersions = async (doc: Document) => {
     setIsLoadingVersions(true);
     try {
       const res = await fetch(`/api/documents/${doc.id}/versions`);
@@ -173,6 +262,140 @@ export function DocumentsView({ user }: DocumentsViewProps) {
     } finally {
       setIsLoadingVersions(false);
     }
+  };
+
+  const loadComments = async (docId: string) => {
+    setIsLoadingComments(true);
+    try {
+      const res = await fetch(`/api/documents/${docId}/comments`);
+      const data = await res.json();
+      if (data.success) {
+        setComments(data.data);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setIsLoadingComments(false);
+    }
+  };
+
+  const loadActivity = async (docId: string) => {
+    setIsLoadingActivity(true);
+    try {
+      const res = await fetch(`/api/documents/${docId}/activity`);
+      const data = await res.json();
+      if (data.success) {
+        setActivityLogs(data.data);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setIsLoadingActivity(false);
+    }
+  };
+
+  const handleAddComment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedDoc || !newCommentText.trim()) return;
+
+    setIsSubmittingComment(true);
+    try {
+      const res = await fetch(`/api/documents/${selectedDoc.id}/comments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: newCommentText.trim() }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message || 'Failed to post comment');
+
+      setNewCommentText('');
+      addToast('Comment added', 'success');
+      loadComments(selectedDoc.id);
+      loadActivity(selectedDoc.id);
+    } catch (err: unknown) {
+      addToast((err as Error).message, 'error');
+    } finally {
+      setIsSubmittingComment(false);
+    }
+  };
+
+  const handleDeleteComment = async (commentId: string) => {
+    if (!selectedDoc) return;
+    try {
+      const res = await fetch(`/api/documents/${selectedDoc.id}/comments/${commentId}`, {
+        method: 'DELETE',
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message || 'Failed to delete comment');
+
+      addToast('Comment deleted', 'success');
+      loadComments(selectedDoc.id);
+      loadActivity(selectedDoc.id);
+    } catch (err: unknown) {
+      addToast((err as Error).message, 'error');
+    }
+  };
+
+  // Phase 2C: Favorite Toggle
+  const handleToggleFavorite = async (docId: string, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    try {
+      const res = await fetch(`/api/documents/${docId}/favorite`, { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        setDocuments((prev) =>
+          prev.map((d) => (d.id === docId ? { ...d, isFavorite: data.isFavorite } : d))
+        );
+        if (selectedDoc?.id === docId) {
+          setSelectedDoc((prev) => (prev ? { ...prev, isFavorite: data.isFavorite } : null));
+        }
+        addToast(data.isFavorite ? 'Added to favorites' : 'Removed from favorites', 'success');
+      }
+    } catch {
+      addToast('Failed to update favorite', 'error');
+    }
+  };
+
+  // Phase 2C: Restore Document from Trash
+  const handleRestoreDocument = async (doc: Document, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    try {
+      const res = await fetch(`/api/documents/${doc.id}/restore`, { method: 'POST' });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message || 'Failed to restore document');
+
+      addToast(`"${doc.name}" restored successfully`, 'success');
+      if (selectedDoc?.id === doc.id) setSelectedDoc(null);
+      fetchData();
+    } catch (err: unknown) {
+      addToast((err as Error).message, 'error');
+    }
+  };
+
+  // Phase 2C: Permanently Purge Document
+  const handlePurgeDocument = async (doc: Document, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    if (!confirm(`Permanently delete "${doc.name}"? This action CANNOT be undone.`)) return;
+
+    try {
+      const res = await fetch(`/api/documents/${doc.id}/permanent`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message || 'Failed to permanently delete');
+
+      addToast(`"${doc.name}" permanently deleted`, 'success');
+      if (selectedDoc?.id === doc.id) setSelectedDoc(null);
+      fetchData();
+    } catch (err: unknown) {
+      addToast((err as Error).message, 'error');
+    }
+  };
+
+  // Phase 2C: Text Viewer
+  const handleOpenTextViewer = (doc: Document, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    setTextViewerDocId(doc.id);
+    setTextViewerDocName(doc.name);
+    setIsTextViewerOpen(true);
   };
 
   // Phase 2B: File Download & Access Handlers
@@ -487,13 +710,254 @@ export function DocumentsView({ user }: DocumentsViewProps) {
     }
   };
 
+  // --------------------------------------------------------------------
+  // Phase 2D: Bulk Selection & Actions
+  // --------------------------------------------------------------------
+  const handleToggleSelectDoc = (docId: string, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    setSelectedDocIds((prev) =>
+      prev.includes(docId) ? prev.filter((id) => id !== docId) : [...prev, docId]
+    );
+  };
+
+  const handleSelectAllVisible = () => {
+    if (selectedDocIds.length === currentDocs.length && currentDocs.length > 0) {
+      setSelectedDocIds([]);
+    } else {
+      setSelectedDocIds(currentDocs.map((d) => d.id));
+    }
+  };
+
+  const handleExecuteBulkAction = async (action: 'add-tag' | 'remove-tag' | 'move' | 'delete' | 'archive') => {
+    if (selectedDocIds.length === 0) return;
+    setIsSubmittingBulk(true);
+
+    try {
+      const payload: Record<string, unknown> = {
+        action,
+        documentIds: selectedDocIds,
+      };
+
+      if (action === 'add-tag') {
+        if (!bulkTagId) throw new Error('Please select a tag to assign');
+        payload.tagId = bulkTagId;
+      } else if (action === 'remove-tag') {
+        if (!bulkRemoveTagId) throw new Error('Please select a tag to remove');
+        payload.tagId = bulkRemoveTagId;
+      } else if (action === 'move') {
+        payload.targetFolderId = bulkTargetFolderId;
+      }
+
+      const res = await fetch('/api/documents/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error?.message || data.message || 'Bulk operation failed');
+
+      addToast(`Bulk ${action.replace('-', ' ')} completed for ${data.data?.affectedCount || selectedDocIds.length} document(s)`, 'success');
+      setSelectedDocIds([]);
+      setIsBulkAddTagOpen(false);
+      setIsBulkRemoveTagOpen(false);
+      setIsBulkMoveOpen(false);
+      setIsBulkDeleteOpen(false);
+      setIsBulkArchiveOpen(false);
+      await fetchData();
+    } catch (err: unknown) {
+      addToast((err as Error).message, 'error');
+    } finally {
+      setIsSubmittingBulk(false);
+    }
+  };
+
+  // --------------------------------------------------------------------
+  // Phase 2D: Document Metadata Dynamic Editing
+  // --------------------------------------------------------------------
+  const handleStartEditMetadata = () => {
+    if (!selectedDoc) return;
+    const initialValues: Record<string, unknown> = { ...(selectedDoc.metadata || {}) };
+    setMetadataFormValues(initialValues);
+    setMetadataErrors({});
+    setIsEditingMetadata(true);
+  };
+
+  const handleSaveMetadata = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedDoc) return;
+
+    // Validate required fields
+    const docType = documentTypes.find((dt) => dt.id === selectedDoc.documentTypeId);
+    const errors: Record<string, string> = {};
+
+    if (docType?.fields) {
+      for (const field of docType.fields) {
+        if (field.required) {
+          const val = metadataFormValues[field.key];
+          if (val === undefined || val === null || val === '') {
+            errors[field.key] = `${field.name} is required`;
+          } else if (Array.isArray(val) && val.length === 0) {
+            errors[field.key] = `${field.name} is required`;
+          }
+        }
+      }
+    }
+
+    if (Object.keys(errors).length > 0) {
+      setMetadataErrors(errors);
+      addToast('Please fill in all required metadata fields', 'error');
+      return;
+    }
+
+    setIsSavingMetadata(true);
+    try {
+      const res = await fetch(`/api/documents/${selectedDoc.id}/metadata`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ metadata: metadataFormValues }),
+      });
+
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error?.message || data.message || 'Failed to save metadata');
+
+      addToast('Document metadata updated', 'success');
+      setSelectedDoc((prev) => (prev ? { ...prev, metadata: data.data } : null));
+      setDocuments((prev) =>
+        prev.map((d) => (d.id === selectedDoc.id ? { ...d, metadata: data.data } : d))
+      );
+      setIsEditingMetadata(false);
+      setMetadataErrors({});
+    } catch (err: unknown) {
+      addToast((err as Error).message, 'error');
+    } finally {
+      setIsSavingMetadata(false);
+    }
+  };
+
+  const handleUpdateDocumentType = async (newTypeId: string) => {
+    if (!selectedDoc) return;
+    try {
+      const res = await fetch(`/api/documents/${selectedDoc.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ documentTypeId: newTypeId || null }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message || 'Failed to update document type');
+
+      addToast('Document classification updated', 'success');
+      setSelectedDoc(data.data);
+      setDocuments((prev) => prev.map((d) => (d.id === selectedDoc.id ? data.data : d)));
+      setIsEditingMetadata(false);
+    } catch (err: unknown) {
+      addToast((err as Error).message, 'error');
+    }
+  };
+
+  // --------------------------------------------------------------------
+  // Phase 2D: Tags Management on Document
+  // --------------------------------------------------------------------
+  const handleAssignTagToDoc = async (tagId: string) => {
+    if (!selectedDoc || !tagId) return;
+    try {
+      const res = await fetch(`/api/documents/${selectedDoc.id}/tags`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tagId }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message || 'Failed to assign tag');
+
+      addToast('Tag assigned', 'success');
+      const tagObj = tags.find((t) => t.id === tagId);
+      if (tagObj) {
+        const updatedTags = [...(selectedDoc.tags || []), tagObj];
+        setSelectedDoc({ ...selectedDoc, tags: updatedTags });
+        setDocuments((prev) =>
+          prev.map((d) => (d.id === selectedDoc.id ? { ...d, tags: updatedTags } : d))
+        );
+      }
+      setIsAddingDocTag(false);
+      setSelectedDocTagId('');
+    } catch (err: unknown) {
+      addToast((err as Error).message, 'error');
+    }
+  };
+
+  const handleCreateAndAssignTag = async () => {
+    if (!selectedDoc || !inlineNewTagName.trim()) return;
+    try {
+      const tagRes = await fetch('/api/tags', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: inlineNewTagName.trim() }),
+      });
+      const tagData = await tagRes.json();
+      if (!tagData.success) throw new Error(tagData.message || 'Failed to create tag');
+
+      const createdTag: Tag = tagData.data;
+      setTags((prev) => (prev.some((t) => t.id === createdTag.id) ? prev : [...prev, createdTag]));
+
+      await handleAssignTagToDoc(createdTag.id);
+      setInlineNewTagName('');
+    } catch (err: unknown) {
+      addToast((err as Error).message, 'error');
+    }
+  };
+
+  const handleRemoveTagFromDoc = async (docId: string, tagId: string, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    try {
+      const res = await fetch(`/api/documents/${docId}/tags/${tagId}`, {
+        method: 'DELETE',
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message || 'Failed to remove tag');
+
+      addToast('Tag removed', 'success');
+      if (selectedDoc?.id === docId) {
+        const updatedTags = (selectedDoc.tags || []).filter((t) => t.id !== tagId);
+        setSelectedDoc({ ...selectedDoc, tags: updatedTags });
+        setDocuments((prev) =>
+          prev.map((d) => (d.id === docId ? { ...d, tags: updatedTags } : d))
+        );
+      }
+    } catch (err: unknown) {
+      addToast((err as Error).message, 'error');
+    }
+  };
+
+  const handleDeleteTag = async () => {
+    if (!tagToDelete) return;
+    try {
+      const res = await fetch(`/api/tags/${tagToDelete.id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message || 'Failed to delete tag');
+
+      addToast(`Tag "${tagToDelete.name}" deleted`, 'success');
+      setIsDeleteTagOpen(false);
+      setTagToDelete(null);
+      await fetchData();
+    } catch (err: unknown) {
+      addToast((err as Error).message, 'error');
+    }
+  };
+
   // Filtered views
-  const currentFolders = folders.filter((f) => f.parentFolderId === currentFolderId);
+  const currentFolders = docView === 'explorer' ? folders.filter((f) => f.parentFolderId === currentFolderId) : [];
   const currentDocs = documents.filter((d) => {
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
-      return d.name.toLowerCase().includes(q) || d.originalFileName.toLowerCase().includes(q);
+      const match = d.name.toLowerCase().includes(q) || d.originalFileName.toLowerCase().includes(q);
+      if (!match) return false;
     }
+    if (selectedTagFilter) {
+      if (!d.tags || !d.tags.some((t) => t.id === selectedTagFilter || t.name === selectedTagFilter)) {
+        return false;
+      }
+    }
+    if (docView !== 'explorer') return true;
     return d.folderId === currentFolderId;
   });
 
@@ -504,10 +968,10 @@ export function DocumentsView({ user }: DocumentsViewProps) {
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-xl font-bold tracking-tight text-slate-900">Document Management</h1>
-            <Badge variant="info">Phase 2A Foundation</Badge>
+            <Badge variant="info">Phase 2D Active</Badge>
           </div>
           <p className="mt-1 text-xs text-slate-500">
-            Hierarchical folders, document type schemas, versioning, and organization isolation.
+            Enterprise document storage, hierarchical explorer, custom metadata schemas, tagging, bulk actions & favorites.
           </p>
         </div>
 
@@ -519,7 +983,7 @@ export function DocumentsView({ user }: DocumentsViewProps) {
               activeTab === 'explorer' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            <FolderIcon className="h-3.5 w-3.5" /> Explorer
+            <FolderIcon className="h-3.5 w-3.5" /> Documents
           </button>
           <button
             onClick={() => setActiveTab('types')}
@@ -542,444 +1006,1346 @@ export function DocumentsView({ user }: DocumentsViewProps) {
 
       {/* Explorer Tab */}
       {activeTab === 'explorer' && (
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-          {/* Main Explorer Column */}
-          <div className={`${selectedDoc ? 'lg:col-span-2' : 'lg:col-span-3'} space-y-4`}>
-            {/* Action Bar & Breadcrumbs */}
-            <div className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-white p-4 shadow-2xs sm:flex-row sm:items-center sm:justify-between">
-              {/* Breadcrumb Path */}
-              <div className="flex items-center gap-1.5 overflow-x-auto text-xs font-medium text-slate-600">
-                <button
-                  onClick={() => setCurrentFolderId(null)}
-                  className={`rounded px-1.5 py-0.5 hover:bg-slate-100 ${
-                    currentFolderId === null ? 'font-bold text-slate-900' : ''
-                  }`}
+        <div className="space-y-4">
+          {/* Phase 2D View Navigation & Filter Bar */}
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white p-2.5 shadow-2xs">
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => {
+                  setDocView('explorer');
+                  setCurrentFolderId(null);
+                  setSelectedTagFilter(null);
+                }}
+                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  docView === 'explorer'
+                    ? 'bg-slate-900 text-white shadow-xs'
+                    : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                }`}
+              >
+                <FolderIcon className="h-3.5 w-3.5" /> Folder Explorer
+              </button>
+              <button
+                onClick={() => {
+                  setDocView('favorites');
+                  setSelectedTagFilter(null);
+                }}
+                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  docView === 'favorites'
+                    ? 'bg-amber-500 text-white shadow-xs'
+                    : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                }`}
+              >
+                <Star className="h-3.5 w-3.5" /> Starred
+              </button>
+              <button
+                onClick={() => {
+                  setDocView('recent');
+                  setSelectedTagFilter(null);
+                }}
+                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  docView === 'recent'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                }`}
+              >
+                <Clock className="h-3.5 w-3.5" /> Recent
+              </button>
+              <button
+                onClick={() => {
+                  setDocView('trash');
+                  setSelectedTagFilter(null);
+                }}
+                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  docView === 'trash'
+                    ? 'bg-rose-600 text-white shadow-xs'
+                    : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                }`}
+              >
+                <Trash2 className="h-3.5 w-3.5" /> Trash
+              </button>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              {/* Tag Filter */}
+              <div className="flex items-center gap-1">
+                <select
+                  value={selectedTagFilter || ''}
+                  onChange={(e) => setSelectedTagFilter(e.target.value || null)}
+                  className="h-8 rounded-md border border-slate-200 bg-slate-50 px-2.5 text-xs text-slate-700 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-600"
                 >
-                  Root
-                </button>
-                {folderPath.map((f, i) => (
-                  <React.Fragment key={f.id}>
-                    <ChevronRight className="h-3.5 w-3.5 text-slate-400 shrink-0" />
-                    <button
-                      onClick={() => setCurrentFolderId(f.id)}
-                      className={`rounded px-1.5 py-0.5 hover:bg-slate-100 ${
-                        i === folderPath.length - 1 ? 'font-bold text-slate-900' : ''
-                      }`}
-                    >
-                      {f.name}
-                    </button>
-                  </React.Fragment>
-                ))}
+                  <option value="">All Tags</option>
+                  {tags.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      Tag: {t.name}
+                    </option>
+                  ))}
+                </select>
+                {selectedTagFilter && (
+                  <button
+                    onClick={() => setSelectedTagFilter(null)}
+                    className="rounded p-1 text-slate-400 hover:text-slate-600"
+                    title="Clear Tag Filter"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
 
-              {/* Action Buttons */}
-              <div className="flex items-center gap-2">
-                <div className="relative">
-                  <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-slate-400" />
-                  <input
-                    type="text"
-                    placeholder="Search documents..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="h-8 rounded-md border border-slate-200 bg-slate-50 pl-8 pr-3 text-xs text-slate-900 placeholder:text-slate-400 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-600"
-                  />
-                </div>
-                <Button variant="outline" size="sm" onClick={() => setIsCreateFolderOpen(true)}>
-                  <FolderPlus className="mr-1.5 h-3.5 w-3.5" /> New Folder
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => setIsCreateDocOpen(true)}>
-                  <Plus className="mr-1.5 h-3.5 w-3.5" /> Manual Record
-                </Button>
+              <div className="relative">
+                <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Search documents..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="h-8 rounded-md border border-slate-200 bg-slate-50 pl-8 pr-3 text-xs text-slate-900 placeholder:text-slate-400 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-600 sm:w-48"
+                />
+              </div>
+
+              {/* View Switcher: List vs Grid */}
+              <div className="flex items-center rounded-md border border-slate-200 bg-slate-50 p-0.5">
+                <button
+                  type="button"
+                  onClick={() => handleSetViewMode('list')}
+                  className={`rounded p-1 transition-colors ${
+                    viewMode === 'list' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-400 hover:text-slate-700'
+                  }`}
+                  title="List View"
+                >
+                  <List className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSetViewMode('grid')}
+                  className={`rounded p-1 transition-colors ${
+                    viewMode === 'grid' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-400 hover:text-slate-700'
+                  }`}
+                  title="Grid View"
+                >
+                  <LayoutGrid className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              {docView === 'explorer' && (
+                <>
+                  <Button variant="outline" size="sm" onClick={() => setIsCreateFolderOpen(true)}>
+                    <FolderPlus className="mr-1.5 h-3.5 w-3.5" /> New Folder
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => setIsCreateDocOpen(true)}>
+                    <Plus className="mr-1.5 h-3.5 w-3.5" /> Manual Record
+                  </Button>
+                </>
+              )}
+              {docView !== 'trash' && (
                 <Button variant="primary" size="sm" onClick={() => setIsUploadModalOpen(true)}>
                   <Upload className="mr-1.5 h-3.5 w-3.5" /> Upload Files
                 </Button>
+              )}
+            </div>
+          </div>
+
+          {/* Phase 2D: Sticky Bulk Actions Toolbar */}
+          {selectedDocIds.length > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-900 text-white p-3 shadow-md">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-xs text-white bg-blue-600 px-2 py-0.5 rounded">
+                  {selectedDocIds.length} Selected
+                </span>
+                <button
+                  onClick={handleSelectAllVisible}
+                  className="text-[11px] text-slate-300 hover:text-white underline underline-offset-2 ml-1"
+                >
+                  {selectedDocIds.length === currentDocs.length ? 'Deselect All' : `Select All (${currentDocs.length})`}
+                </button>
+              </div>
+
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs bg-slate-800 border-slate-700 text-slate-200 hover:bg-slate-700 hover:text-white"
+                  onClick={() => {
+                    setBulkTagId(tags[0]?.id || '');
+                    setIsBulkAddTagOpen(true);
+                  }}
+                >
+                  <TagIcon className="h-3 w-3 mr-1" /> Add Tag
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs bg-slate-800 border-slate-700 text-slate-200 hover:bg-slate-700 hover:text-white"
+                  onClick={() => {
+                    setBulkRemoveTagId(tags[0]?.id || '');
+                    setIsBulkRemoveTagOpen(true);
+                  }}
+                >
+                  <X className="h-3 w-3 mr-1" /> Remove Tag
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs bg-slate-800 border-slate-700 text-slate-200 hover:bg-slate-700 hover:text-white"
+                  onClick={() => {
+                    setBulkTargetFolderId(null);
+                    setIsBulkMoveOpen(true);
+                  }}
+                >
+                  <FolderInput className="h-3 w-3 mr-1" /> Move
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs bg-slate-800 border-slate-700 text-slate-200 hover:bg-slate-700 hover:text-white"
+                  onClick={() => setIsBulkArchiveOpen(true)}
+                >
+                  <Archive className="h-3 w-3 mr-1" /> Archive
+                </Button>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  className="h-7 text-xs"
+                  onClick={() => setIsBulkDeleteOpen(true)}
+                >
+                  <Trash2 className="h-3 w-3 mr-1" /> Delete
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 text-xs text-slate-400 hover:text-white hover:bg-slate-800"
+                  onClick={() => setSelectedDocIds([])}
+                >
+                  Cancel
+                </Button>
               </div>
             </div>
+          )}
 
-            {/* Content List */}
-            <Card>
-              <CardContent className="p-0">
-                {isLoading ? (
-                  <div className="p-8 text-center text-xs text-slate-500">Loading documents & folders...</div>
-                ) : currentFolders.length === 0 && currentDocs.length === 0 ? (
-                  <div className="p-8">
-                    <EmptyState
-                      icon={<FolderIcon className="h-8 w-8 text-slate-400" />}
-                      title="This folder is empty"
-                      description="Upload files or create subfolders to start organizing documents."
-                      action={
-                        <div className="flex items-center gap-2 justify-center">
-                          <Button size="sm" variant="outline" onClick={() => setIsCreateFolderOpen(true)}>
-                            <FolderPlus className="mr-1.5 h-3.5 w-3.5" /> New Folder
-                          </Button>
-                          <Button size="sm" onClick={() => setIsUploadModalOpen(true)}>
-                            <Upload className="mr-1.5 h-3.5 w-3.5" /> Upload Files
-                          </Button>
-                        </div>
-                      }
-                    />
-                  </div>
-                ) : (
-                  <div className="divide-y divide-slate-100">
-                    {/* Folders List */}
-                    {currentFolders.map((folder) => (
-                      <div
-                        key={folder.id}
-                        className="group flex items-center justify-between p-3.5 hover:bg-slate-50 transition-colors"
+          {/* Trash Recovery Banner */}
+          {docView === 'trash' && (
+            <div className="flex items-center gap-3 rounded-lg border border-amber-200 bg-amber-50/90 p-3 text-xs text-amber-800">
+              <AlertTriangle className="h-5 w-5 shrink-0 text-amber-600" />
+              <div>
+                <p className="font-semibold text-amber-900">Trash & Document Recovery</p>
+                <p className="text-amber-700">
+                  Documents in trash can be restored back to your active workspace or permanently purged.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Main Content Layout */}
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+            {/* Main Documents & Folders Column */}
+            <div className={`${selectedDoc ? 'lg:col-span-2' : 'lg:col-span-3'} space-y-4`}>
+              {/* Breadcrumb Path (for Explorer mode) */}
+              {docView === 'explorer' && (
+                <div className="flex items-center gap-1.5 overflow-x-auto rounded-lg border border-slate-200 bg-white p-3 text-xs font-medium text-slate-600 shadow-2xs">
+                  <button
+                    onClick={() => setCurrentFolderId(null)}
+                    className={`rounded px-1.5 py-0.5 hover:bg-slate-100 ${
+                      currentFolderId === null ? 'font-bold text-slate-900' : ''
+                    }`}
+                  >
+                    Root
+                  </button>
+                  {folderPath.map((f, i) => (
+                    <React.Fragment key={f.id}>
+                      <ChevronRight className="h-3.5 w-3.5 text-slate-400 shrink-0" />
+                      <button
+                        onClick={() => setCurrentFolderId(f.id)}
+                        className={`rounded px-1.5 py-0.5 hover:bg-slate-100 ${
+                          i === folderPath.length - 1 ? 'font-bold text-slate-900' : ''
+                        }`}
                       >
-                        <div
-                          className="flex items-center gap-3 cursor-pointer flex-1"
-                          onClick={() => setCurrentFolderId(folder.id)}
-                        >
-                          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-amber-50 text-amber-600">
-                            <FolderIcon className="h-5 w-5" />
-                          </div>
-                          <div>
-                            <span className="text-sm font-semibold text-slate-900 group-hover:text-blue-600">
-                              {folder.name}
-                            </span>
-                            <p className="text-xs text-slate-400">Created {formatDateTime(folder.createdAt)}</p>
-                          </div>
-                        </div>
+                        {f.name}
+                      </button>
+                    </React.Fragment>
+                  ))}
+                </div>
+              )}
 
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button
-                            onClick={() => {
-                              setTargetFolderToRename(folder);
-                              setRenameValue(folder.name);
-                              setIsRenameFolderOpen(true);
-                            }}
-                            className="rounded p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-700"
-                            title="Rename Folder"
-                          >
-                            <Edit2 className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            onClick={() => handleDeleteFolder(folder)}
-                            className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
-                            title="Delete Folder"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-
-                    {/* Documents List */}
-                    {currentDocs.map((doc) => {
-                      const isSelected = selectedDoc?.id === doc.id;
-                      return (
-                        <div
-                          key={doc.id}
-                          className={`group flex items-center justify-between p-3.5 transition-colors cursor-pointer ${
-                            isSelected ? 'bg-blue-50/70 border-l-2 border-blue-600' : 'hover:bg-slate-50'
-                          }`}
-                          onClick={() => loadVersions(doc)}
-                        >
-                          <div className="flex items-center gap-3 flex-1 min-w-0 pr-4">
-                            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-50 text-blue-600 shrink-0">
-                              <FileText className="h-5 w-5" />
+              {/* Content List */}
+              <Card>
+                <CardContent className="p-0">
+                  {isLoading ? (
+                    <div className="p-8 text-center text-xs text-slate-500">Loading document records...</div>
+                  ) : currentFolders.length === 0 && currentDocs.length === 0 ? (
+                    <div className="p-8">
+                      <EmptyState
+                        icon={
+                          docView === 'trash' ? (
+                            <Trash2 className="h-8 w-8 text-slate-400" />
+                          ) : docView === 'favorites' ? (
+                            <Star className="h-8 w-8 text-amber-400" />
+                          ) : (
+                            <FolderIcon className="h-8 w-8 text-slate-400" />
+                          )
+                        }
+                        title={
+                          docView === 'trash'
+                            ? 'Trash is empty'
+                            : docView === 'favorites'
+                            ? 'No starred documents'
+                            : docView === 'recent'
+                            ? 'No recent documents'
+                            : 'This folder is empty'
+                        }
+                        description={
+                          docView === 'trash'
+                            ? 'No deleted documents found.'
+                            : docView === 'favorites'
+                            ? 'Click the star icon on any document to add it to your favorites.'
+                            : 'Upload files or create subfolders to start organizing documents.'
+                        }
+                        action={
+                          docView === 'explorer' ? (
+                            <div className="flex items-center gap-2 justify-center">
+                              <Button size="sm" variant="outline" onClick={() => setIsCreateFolderOpen(true)}>
+                                <FolderPlus className="mr-1.5 h-3.5 w-3.5" /> New Folder
+                              </Button>
+                              <Button size="sm" onClick={() => setIsUploadModalOpen(true)}>
+                                <Upload className="mr-1.5 h-3.5 w-3.5" /> Upload Files
+                              </Button>
                             </div>
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-2">
-                                <span className="text-sm font-semibold text-slate-900 truncate">{doc.name}</span>
-                                <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
-                                  v{doc.versions?.[0]?.versionNumber || 1}
-                                </Badge>
-                                {doc.documentType && (
-                                  <Badge variant="outline" className="text-[10px] px-1.5 py-0">
-                                    {doc.documentType.name}
-                                  </Badge>
-                                )}
-                              </div>
-                              <div className="flex items-center gap-2 mt-0.5 text-xs text-slate-400">
-                                <span>{doc.originalFileName}</span>
-                                <span>•</span>
-                                <span>{(doc.fileSize / 1024).toFixed(1)} KB</span>
-                                <span>•</span>
-                                <span>{formatDateTime(doc.updatedAt)}</span>
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Quick Actions */}
+                          ) : undefined
+                        }
+                      />
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-slate-100">
+                      {/* Folders List (only in Explorer mode) */}
+                      {currentFolders.map((folder) => (
+                        <div
+                          key={folder.id}
+                          className="group flex items-center justify-between p-3.5 hover:bg-slate-50 transition-colors"
+                        >
                           <div
-                            className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
-                            onClick={(e) => e.stopPropagation()}
+                            className="flex items-center gap-3 cursor-pointer flex-1"
+                            onClick={() => setCurrentFolderId(folder.id)}
                           >
-                            <button
-                              onClick={() => handleDownloadFile(doc.id)}
-                              className="rounded p-1 text-slate-400 hover:bg-blue-50 hover:text-blue-600"
-                              title="Download File"
-                            >
-                              <Download className="h-3.5 w-3.5" />
-                            </button>
-                            <button
-                              onClick={() => handlePreviewFile(doc.id)}
-                              className="rounded p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-700"
-                              title="Preview in Tab"
-                            >
-                              <ExternalLink className="h-3.5 w-3.5" />
-                            </button>
-                            <button
-                              onClick={() => handleCopyDocument(doc)}
-                              className="rounded p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-700"
-                              title="Duplicate Record"
-                            >
-                              <Copy className="h-3.5 w-3.5" />
-                            </button>
+                            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-amber-50 text-amber-600">
+                              <FolderIcon className="h-5 w-5" />
+                            </div>
+                            <div>
+                              <span className="text-sm font-semibold text-slate-900 group-hover:text-blue-600">
+                                {folder.name}
+                              </span>
+                              <p className="text-xs text-slate-400">Created {formatDateTime(folder.createdAt)}</p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                             <button
                               onClick={() => {
-                                setDocToMove(doc);
-                                setTargetFolderIdForMove(doc.folderId);
-                                setIsMoveDocOpen(true);
+                                setTargetFolderToRename(folder);
+                                setRenameValue(folder.name);
+                                setIsRenameFolderOpen(true);
                               }}
                               className="rounded p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-700"
-                              title="Move Document"
+                              title="Rename Folder"
                             >
-                              <FolderInput className="h-3.5 w-3.5" />
+                              <Edit2 className="h-3.5 w-3.5" />
                             </button>
                             <button
-                              onClick={() => handleDeleteDocument(doc)}
+                              onClick={() => handleDeleteFolder(folder)}
                               className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
-                              title="Delete Document"
+                              title="Delete Folder"
                             >
                               <Trash2 className="h-3.5 w-3.5" />
                             </button>
                           </div>
                         </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          </div>
+                      ))}
 
-          {/* Selected Document Details & Versioning Drawer */}
-          {selectedDoc && (
-            <div className="space-y-4">
-              <Card>
-                <CardHeader className="flex flex-row items-center justify-between pb-3">
-                  <div>
-                    <CardTitle className="text-sm font-bold truncate max-w-[200px]">
-                      {selectedDoc.name}
-                    </CardTitle>
-                    <CardDescription className="text-xs">Document Record Specs</CardDescription>
-                  </div>
-                  <Button variant="ghost" size="sm" onClick={() => setSelectedDoc(null)}>
-                    ✕
-                  </Button>
-                </CardHeader>
-                <CardContent className="space-y-4 pt-0 text-xs">
-                  {/* File Metadata */}
-                  <div className="space-y-1.5 rounded-md bg-slate-50 p-3 border border-slate-100">
-                    <div className="flex justify-between">
-                      <span className="text-slate-500">Original File:</span>
-                      <span className="font-semibold text-slate-800 truncate max-w-[150px]">
-                        {selectedDoc.originalFileName}
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-500">MIME Type:</span>
-                      <span className="font-mono text-slate-700">{selectedDoc.mimeType}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-500">File Size:</span>
-                      <span className="text-slate-700">{(selectedDoc.fileSize / 1024).toFixed(1)} KB</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-500">Storage Key:</span>
-                      <span className="font-mono text-slate-600 truncate max-w-[160px]" title={selectedDoc.storageKey}>
-                        {selectedDoc.storageKey}
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-500">Checksum (SHA256):</span>
-                      <span className="font-mono text-slate-600 truncate max-w-[150px]" title={selectedDoc.checksum}>
-                        {selectedDoc.checksum.substring(0, 16)}...
-                      </span>
-                    </div>
-                  </div>
+                      {/* Documents View: List or Grid */}
+                      {viewMode === 'grid' ? (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 p-3">
+                          {currentDocs.map((doc) => {
+                            const isSelected = selectedDoc?.id === doc.id;
+                            const isChecked = selectedDocIds.includes(doc.id);
+                            return (
+                              <div
+                                key={doc.id}
+                                onClick={() => selectDocument(doc)}
+                                className={`group relative rounded-lg border p-3.5 transition-all cursor-pointer flex flex-col justify-between ${
+                                  isSelected
+                                    ? 'border-blue-600 bg-blue-50/40 shadow-xs'
+                                    : isChecked
+                                    ? 'border-blue-300 bg-blue-50/20'
+                                    : 'border-slate-200 bg-white hover:border-slate-300 hover:shadow-2xs'
+                                }`}
+                              >
+                                <div>
+                                  {/* Card Top: Checkbox, Type Badge, Star */}
+                                  <div className="flex items-center justify-between gap-1 mb-2">
+                                    <div className="flex items-center gap-2">
+                                      <input
+                                        type="checkbox"
+                                        checked={isChecked}
+                                        onChange={(e) => {
+                                          e.stopPropagation();
+                                          handleToggleSelectDoc(doc.id);
+                                        }}
+                                        onClick={(e) => e.stopPropagation()}
+                                        className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                                        title="Select for bulk action"
+                                      />
+                                      {doc.documentType ? (
+                                        <Badge variant="outline" className="text-[10px] px-1.5 py-0 truncate max-w-[120px]">
+                                          {doc.documentType.name}
+                                        </Badge>
+                                      ) : (
+                                        <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+                                          v{doc.versions?.[0]?.versionNumber || 1}
+                                        </Badge>
+                                      )}
+                                      {doc.status === 'DELETED' && (
+                                        <Badge variant="destructive" className="text-[10px] px-1.5 py-0">
+                                          In Trash
+                                        </Badge>
+                                      )}
+                                    </div>
 
-                  {/* File Access & Operations Bar */}
-                  <div className="flex items-center gap-1.5">
-                    <Button
-                      size="sm"
-                      className="flex-1 text-xs h-8"
-                      onClick={() => handleDownloadFile(selectedDoc.id)}
-                    >
-                      <Download className="mr-1.5 h-3.5 w-3.5" /> Download
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="flex-1 text-xs h-8"
-                      onClick={() => handlePreviewFile(selectedDoc.id)}
-                    >
-                      <ExternalLink className="mr-1.5 h-3.5 w-3.5" /> Preview
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="text-xs h-8 px-2.5 border border-slate-200"
-                      onClick={() => handleCopySignedLink(selectedDoc.id)}
-                      title="Copy temporary signed URL (valid for 15 min)"
-                    >
-                      <Link2 className="h-3.5 w-3.5 text-slate-600" />
-                    </Button>
-                  </div>
+                                    {docView !== 'trash' && (
+                                      <button
+                                        onClick={(e) => handleToggleFavorite(doc.id, e)}
+                                        className={`rounded p-1 transition-colors hover:bg-slate-100 ${
+                                          doc.isFavorite ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
+                                        }`}
+                                        title={doc.isFavorite ? 'Starred' : 'Add to Starred'}
+                                      >
+                                        <Star className={`h-4 w-4 ${doc.isFavorite ? 'fill-amber-400 text-amber-500' : ''}`} />
+                                      </button>
+                                    )}
+                                  </div>
 
-                  {/* Assigned Tags */}
-                  <div>
-                    <span className="font-semibold text-slate-700 block mb-1">Tags</span>
-                    {selectedDoc.tags && selectedDoc.tags.length > 0 ? (
-                      <div className="flex flex-wrap gap-1">
-                        {selectedDoc.tags.map((t) => (
-                          <Badge key={t.id} variant="secondary" className="text-[10px]">
-                            {t.name}
-                          </Badge>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="text-slate-400">No tags assigned</p>
-                    )}
-                  </div>
+                                  {/* Card Body: Icon & Name */}
+                                  <div className="flex items-start gap-2.5 my-1.5">
+                                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50 text-blue-600 shrink-0">
+                                      <FileText className="h-5 w-5" />
+                                    </div>
+                                    <div className="min-w-0 flex-1">
+                                      <h3 className="text-xs font-bold text-slate-900 truncate" title={doc.name}>
+                                        {doc.name}
+                                      </h3>
+                                      <p className="text-[11px] text-slate-400 truncate mt-0.5" title={doc.originalFileName}>
+                                        {doc.originalFileName}
+                                      </p>
+                                    </div>
+                                  </div>
 
-                  {/* Custom Metadata */}
-                  {selectedDoc.metadata && Object.keys(selectedDoc.metadata).length > 0 && (
-                    <div>
-                      <span className="font-semibold text-slate-700 block mb-1">Custom Metadata</span>
-                      <div className="rounded-md bg-slate-50 p-2.5 border border-slate-100 space-y-1">
-                        {Object.entries(selectedDoc.metadata).map(([k, v]) => (
-                          <div key={k} className="flex justify-between text-slate-600">
-                            <span className="font-medium text-slate-500">{k}:</span>
-                            <span className="font-mono text-slate-800">{String(v)}</span>
-                          </div>
-                        ))}
-                      </div>
+                                  {/* Tags */}
+                                  {doc.tags && doc.tags.length > 0 && (
+                                    <div className="flex flex-wrap gap-1 mt-2">
+                                      {doc.tags.slice(0, 3).map((t) => (
+                                        <Badge key={t.id} variant="secondary" className="text-[9px] px-1">
+                                          {t.name}
+                                        </Badge>
+                                      ))}
+                                      {doc.tags.length > 3 && (
+                                        <span className="text-[9px] text-slate-400 font-medium self-center">
+                                          +{doc.tags.length - 3}
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* Card Footer: Metadata & Quick Actions */}
+                                <div className="mt-3 pt-2 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-400">
+                                  <span>{formatBytes(doc.fileSize)}</span>
+
+                                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity" onClick={(e) => e.stopPropagation()}>
+                                    {docView === 'trash' ? (
+                                      <>
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          className="h-6 text-[10px] text-emerald-700 px-1.5"
+                                          onClick={(e) => handleRestoreDocument(doc, e)}
+                                        >
+                                          Restore
+                                        </Button>
+                                        <Button
+                                          size="sm"
+                                          variant="ghost"
+                                          className="h-6 text-[10px] text-rose-600 px-1.5"
+                                          onClick={(e) => handlePurgeDocument(doc, e)}
+                                        >
+                                          Purge
+                                        </Button>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <button
+                                          onClick={(e) => handleOpenTextViewer(doc, e)}
+                                          className="rounded p-1 text-slate-400 hover:bg-blue-50 hover:text-blue-600"
+                                          title="View Text"
+                                        >
+                                          <FileCode2 className="h-3.5 w-3.5" />
+                                        </button>
+                                        <button
+                                          onClick={() => handleDownloadFile(doc.id)}
+                                          className="rounded p-1 text-slate-400 hover:bg-blue-50 hover:text-blue-600"
+                                          title="Download"
+                                        >
+                                          <Download className="h-3.5 w-3.5" />
+                                        </button>
+                                        <button
+                                          onClick={() => handlePreviewFile(doc.id)}
+                                          className="rounded p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-700"
+                                          title="Preview"
+                                        >
+                                          <ExternalLink className="h-3.5 w-3.5" />
+                                        </button>
+                                        <button
+                                          onClick={() => handleDeleteDocument(doc)}
+                                          className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
+                                          title="Move to Trash"
+                                        >
+                                          <Trash2 className="h-3.5 w-3.5" />
+                                        </button>
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        /* List Mode */
+                        currentDocs.map((doc) => {
+                          const isSelected = selectedDoc?.id === doc.id;
+                          const isChecked = selectedDocIds.includes(doc.id);
+                          return (
+                            <div
+                              key={doc.id}
+                              className={`group flex items-center justify-between p-3.5 transition-colors cursor-pointer ${
+                                isSelected ? 'bg-blue-50/70 border-l-2 border-blue-600' : isChecked ? 'bg-blue-50/30' : 'hover:bg-slate-50'
+                              }`}
+                              onClick={() => selectDocument(doc)}
+                            >
+                              <div className="flex items-center gap-3 flex-1 min-w-0 pr-4">
+                                {/* Bulk Selection Checkbox */}
+                                <input
+                                  type="checkbox"
+                                  checked={isChecked}
+                                  onChange={(e) => {
+                                    e.stopPropagation();
+                                    handleToggleSelectDoc(doc.id);
+                                  }}
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer shrink-0"
+                                  title="Select for bulk action"
+                                />
+
+                                {/* Star / Favorite Button */}
+                                {docView !== 'trash' && (
+                                  <button
+                                    onClick={(e) => handleToggleFavorite(doc.id, e)}
+                                    className={`rounded p-1 transition-colors hover:bg-slate-100 shrink-0 ${
+                                      doc.isFavorite ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
+                                    }`}
+                                    title={doc.isFavorite ? 'Starred' : 'Add to Starred'}
+                                  >
+                                    <Star
+                                      className={`h-4 w-4 ${doc.isFavorite ? 'fill-amber-400 text-amber-500' : ''}`}
+                                    />
+                                  </button>
+                                )}
+
+                                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-50 text-blue-600 shrink-0">
+                                  <FileText className="h-5 w-5" />
+                                </div>
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-sm font-semibold text-slate-900 truncate">{doc.name}</span>
+                                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+                                      v{doc.versions?.[0]?.versionNumber || 1}
+                                    </Badge>
+                                    {doc.documentType && (
+                                      <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                                        {doc.documentType.name}
+                                      </Badge>
+                                    )}
+                                    {doc.status === 'DELETED' && (
+                                      <Badge variant="destructive" className="text-[10px] px-1.5 py-0">
+                                        In Trash
+                                      </Badge>
+                                    )}
+                                  </div>
+                                  <div className="flex items-center gap-2 mt-0.5 text-xs text-slate-400">
+                                    <span>{doc.originalFileName}</span>
+                                    <span>•</span>
+                                    <span>{formatBytes(doc.fileSize)}</span>
+                                    <span>•</span>
+                                    <span>{formatDateTime(doc.updatedAt)}</span>
+                                    {doc.tags && doc.tags.length > 0 && (
+                                      <>
+                                        <span>•</span>
+                                        <div className="flex items-center gap-1">
+                                          {doc.tags.slice(0, 2).map((t) => (
+                                            <Badge key={t.id} variant="secondary" className="text-[9px] px-1 py-0">
+                                              {t.name}
+                                            </Badge>
+                                          ))}
+                                          {doc.tags.length > 2 && (
+                                            <span className="text-[9px] text-slate-400">+{doc.tags.length - 2}</span>
+                                          )}
+                                        </div>
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Quick Actions */}
+                              <div
+                                className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                {docView === 'trash' ? (
+                                  <>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-7 text-xs text-emerald-700 hover:bg-emerald-50 hover:border-emerald-300"
+                                      onClick={(e) => handleRestoreDocument(doc, e)}
+                                    >
+                                      <RotateCcw className="mr-1 h-3 w-3" /> Restore
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      className="h-7 text-xs text-rose-600 hover:bg-rose-50"
+                                      onClick={(e) => handlePurgeDocument(doc, e)}
+                                    >
+                                      <Trash2 className="mr-1 h-3 w-3" /> Purge
+                                    </Button>
+                                  </>
+                                ) : (
+                                  <>
+                                    <button
+                                      onClick={(e) => handleOpenTextViewer(doc, e)}
+                                      className="rounded p-1 text-slate-400 hover:bg-blue-50 hover:text-blue-600"
+                                      title="View Text / Code"
+                                    >
+                                      <FileCode2 className="h-3.5 w-3.5" />
+                                    </button>
+                                    <button
+                                      onClick={() => handleDownloadFile(doc.id)}
+                                      className="rounded p-1 text-slate-400 hover:bg-blue-50 hover:text-blue-600"
+                                      title="Download File"
+                                    >
+                                      <Download className="h-3.5 w-3.5" />
+                                    </button>
+                                    <button
+                                      onClick={() => handlePreviewFile(doc.id)}
+                                      className="rounded p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-700"
+                                      title="Preview in Tab"
+                                    >
+                                      <ExternalLink className="h-3.5 w-3.5" />
+                                    </button>
+                                    <button
+                                      onClick={() => handleCopyDocument(doc)}
+                                      className="rounded p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-700"
+                                      title="Duplicate Record"
+                                    >
+                                      <Copy className="h-3.5 w-3.5" />
+                                    </button>
+                                    <button
+                                      onClick={() => {
+                                        setDocToMove(doc);
+                                        setTargetFolderIdForMove(doc.folderId);
+                                        setIsMoveDocOpen(true);
+                                      }}
+                                      className="rounded p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-700"
+                                      title="Move Document"
+                                    >
+                                      <FolderInput className="h-3.5 w-3.5" />
+                                    </button>
+                                    <button
+                                      onClick={() => handleDeleteDocument(doc)}
+                                      className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
+                                      title="Move to Trash"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
                     </div>
                   )}
-
-                  {/* Version History */}
-                  <div className="pt-2 border-t border-slate-100">
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-1.5 font-semibold text-slate-800">
-                        <History className="h-3.5 w-3.5 text-blue-600" />
-                        <span>Version History ({versions.length})</span>
-                      </div>
-                      <Button variant="outline" size="sm" onClick={() => setIsVersionUploadOpen(true)}>
-                        <Upload className="mr-1 h-3 w-3" /> New Version
-                      </Button>
-                    </div>
-
-                    {isLoadingVersions ? (
-                      <p className="text-slate-400">Loading versions...</p>
-                    ) : (
-                      <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
-                        {versions.map((v, idx) => (
-                          <div
-                            key={v.id}
-                            className="rounded-md border border-slate-200 p-2 bg-white flex items-center justify-between gap-2"
-                          >
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-1.5">
-                                <span className="font-bold text-slate-900 shrink-0">v{v.versionNumber}</span>
-                                {idx === 0 && <Badge variant="success" className="text-[9px] px-1">Active</Badge>}
-                                <span className="text-[11px] text-slate-500 truncate" title={v.fileName}>{v.fileName}</span>
-                              </div>
-                              <p className="text-[10px] text-slate-400 mt-0.5 truncate">
-                                {formatDateTime(v.createdAt)} {v.changeDescription && `• "${v.changeDescription}"`}
-                              </p>
-                            </div>
-
-                            <div className="flex items-center gap-1 shrink-0">
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => handleDownloadFile(selectedDoc.id, v.versionNumber)}
-                                className="text-[11px] text-slate-600 hover:text-blue-600 h-7 px-1.5"
-                                title={`Download version ${v.versionNumber}`}
-                              >
-                                <Download className="h-3.5 w-3.5" />
-                              </Button>
-
-                              {idx !== 0 && (
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() => handleRestoreVersion(v)}
-                                  className="text-[11px] text-blue-600 hover:text-blue-700 h-7 px-1.5"
-                                >
-                                  Restore
-                                </Button>
-                              )}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
                 </CardContent>
               </Card>
             </div>
-          )}
+
+            {/* Selected Document Details & Versioning Drawer */}
+            {selectedDoc && (
+              <div className="space-y-4">
+                <Card>
+                  <CardHeader className="flex flex-row items-center justify-between pb-3">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <button
+                        onClick={(e) => handleToggleFavorite(selectedDoc.id, e)}
+                        className={`rounded p-1 transition-colors hover:bg-slate-100 ${
+                          selectedDoc.isFavorite ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
+                        }`}
+                        title={selectedDoc.isFavorite ? 'Starred' : 'Add to Starred'}
+                      >
+                        <Star
+                          className={`h-4 w-4 ${selectedDoc.isFavorite ? 'fill-amber-400 text-amber-500' : ''}`}
+                        />
+                      </button>
+                      <div className="min-w-0">
+                        <CardTitle className="text-sm font-bold truncate max-w-[180px]">
+                          {selectedDoc.name}
+                        </CardTitle>
+                        <CardDescription className="text-3xs truncate">
+                          {selectedDoc.originalFileName}
+                        </CardDescription>
+                      </div>
+                    </div>
+                    <Button variant="ghost" size="sm" onClick={() => setSelectedDoc(null)}>
+                      ✕
+                    </Button>
+                  </CardHeader>
+
+                  {/* Drawer Tabs */}
+                  <div className="flex border-b border-slate-200 px-4">
+                    <button
+                      onClick={() => setDrawerTab('details')}
+                      className={`border-b-2 py-2 px-2.5 text-xs font-semibold transition-colors ${
+                        drawerTab === 'details'
+                          ? 'border-blue-600 text-blue-600'
+                          : 'border-transparent text-slate-500 hover:text-slate-900'
+                      }`}
+                    >
+                      Overview
+                    </button>
+                    <button
+                      onClick={() => setDrawerTab('versions')}
+                      className={`border-b-2 py-2 px-2.5 text-xs font-semibold transition-colors ${
+                        drawerTab === 'versions'
+                          ? 'border-blue-600 text-blue-600'
+                          : 'border-transparent text-slate-500 hover:text-slate-900'
+                      }`}
+                    >
+                      Versions ({versions.length})
+                    </button>
+                    <button
+                      onClick={() => setDrawerTab('comments')}
+                      className={`border-b-2 py-2 px-2.5 text-xs font-semibold transition-colors ${
+                        drawerTab === 'comments'
+                          ? 'border-blue-600 text-blue-600'
+                          : 'border-transparent text-slate-500 hover:text-slate-900'
+                      }`}
+                    >
+                      Comments ({comments.length})
+                    </button>
+                    <button
+                      onClick={() => setDrawerTab('activity')}
+                      className={`border-b-2 py-2 px-2.5 text-xs font-semibold transition-colors ${
+                        drawerTab === 'activity'
+                          ? 'border-blue-600 text-blue-600'
+                          : 'border-transparent text-slate-500 hover:text-slate-900'
+                      }`}
+                    >
+                      Activity
+                    </button>
+                  </div>
+
+                  <CardContent className="space-y-4 pt-3 text-xs">
+                    {/* DETAILS TAB */}
+                    {drawerTab === 'details' && (
+                      <div className="space-y-3">
+                        {/* File Metadata */}
+                        <div className="space-y-1.5 rounded-md bg-slate-50 p-3 border border-slate-100">
+                          <div className="flex justify-between">
+                            <span className="text-slate-500">MIME Type:</span>
+                            <span className="font-mono text-slate-700">{selectedDoc.mimeType}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-500">File Size:</span>
+                            <span className="text-slate-700">{formatBytes(selectedDoc.fileSize)}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-500">Status:</span>
+                            <Badge
+                              variant={selectedDoc.status === 'ACTIVE' ? 'success' : 'secondary'}
+                              className="text-[9px] px-1.5"
+                            >
+                              {selectedDoc.status}
+                            </Badge>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-500">Storage Key:</span>
+                            <span className="font-mono text-slate-600 truncate max-w-[150px]" title={selectedDoc.storageKey}>
+                              {selectedDoc.storageKey}
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-500">SHA256 Checksum:</span>
+                            <span className="font-mono text-slate-600 truncate max-w-[140px]" title={selectedDoc.checksum}>
+                              {selectedDoc.checksum.substring(0, 16)}...
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* File Access & Operations Bar */}
+                        <div className="grid grid-cols-2 gap-1.5">
+                          <Button
+                            size="sm"
+                            className="text-xs h-8"
+                            onClick={() => handleDownloadFile(selectedDoc.id)}
+                          >
+                            <Download className="mr-1.5 h-3.5 w-3.5" /> Download
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="text-xs h-8"
+                            onClick={() => handlePreviewFile(selectedDoc.id)}
+                          >
+                            <ExternalLink className="mr-1.5 h-3.5 w-3.5" /> Preview
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="text-xs h-8"
+                            onClick={(e) => handleOpenTextViewer(selectedDoc, e)}
+                          >
+                            <FileCode className="mr-1.5 h-3.5 w-3.5" /> View Text
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="text-xs h-8"
+                            onClick={() => handleCopySignedLink(selectedDoc.id)}
+                            title="Copy temporary signed URL (valid 15m)"
+                          >
+                            <Link2 className="mr-1.5 h-3.5 w-3.5" /> Signed Link
+                          </Button>
+                        </div>
+
+                        {/* Assigned Tags */}
+                        <div className="space-y-1.5">
+                          <div className="flex items-center justify-between">
+                            <span className="font-semibold text-slate-700 text-xs">Tags</span>
+                            <button
+                              type="button"
+                              onClick={() => setIsAddingDocTag(!isAddingDocTag)}
+                              className="text-xs text-blue-600 hover:text-blue-700 font-medium flex items-center gap-1"
+                            >
+                              <Plus className="h-3 w-3" /> {isAddingDocTag ? 'Cancel' : 'Add Tag'}
+                            </button>
+                          </div>
+
+                          {/* Inline tag addition */}
+                          {isAddingDocTag && (
+                            <div className="p-2 rounded-md bg-slate-50 border border-slate-200 space-y-2">
+                              <div className="flex items-center gap-1.5">
+                                <select
+                                  value={selectedDocTagId}
+                                  onChange={(e) => setSelectedDocTagId(e.target.value)}
+                                  className="flex-1 h-7 text-xs rounded border border-slate-300 bg-white px-2"
+                                >
+                                  <option value="">Select existing tag...</option>
+                                  {tags
+                                    .filter((t) => !selectedDoc.tags?.some((st) => st.id === t.id))
+                                    .map((t) => (
+                                      <option key={t.id} value={t.id}>
+                                        {t.name}
+                                      </option>
+                                    ))}
+                                </select>
+                                <Button
+                                  size="sm"
+                                  className="h-7 text-xs px-2"
+                                  disabled={!selectedDocTagId}
+                                  onClick={() => handleAssignTagToDoc(selectedDocTagId)}
+                                >
+                                  Assign
+                                </Button>
+                              </div>
+
+                              <div className="flex items-center gap-1.5">
+                                <input
+                                  type="text"
+                                  placeholder="Or create new tag..."
+                                  value={inlineNewTagName}
+                                  onChange={(e) => setInlineNewTagName(e.target.value)}
+                                  className="flex-1 h-7 text-xs rounded border border-slate-300 bg-white px-2"
+                                />
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-7 text-xs px-2"
+                                  disabled={!inlineNewTagName.trim()}
+                                  onClick={handleCreateAndAssignTag}
+                                >
+                                  Create & Add
+                                </Button>
+                              </div>
+                            </div>
+                          )}
+
+                          {selectedDoc.tags && selectedDoc.tags.length > 0 ? (
+                            <div className="flex flex-wrap gap-1">
+                              {selectedDoc.tags.map((t) => (
+                                <Badge key={t.id} variant="secondary" className="text-[10px] pr-1 flex items-center gap-1">
+                                  {t.name}
+                                  <button
+                                    type="button"
+                                    onClick={(e) => handleRemoveTagFromDoc(selectedDoc.id, t.id, e)}
+                                    className="hover:text-red-600 rounded p-0.5"
+                                    title="Remove tag"
+                                  >
+                                    <X className="h-2.5 w-2.5" />
+                                  </button>
+                                </Badge>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-xs text-slate-400">No tags assigned</p>
+                          )}
+                        </div>
+
+                        {/* Custom Metadata & Dynamic Document Type Fields */}
+                        <div className="space-y-2 pt-2 border-t border-slate-100">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-semibold text-slate-700 text-xs">Custom Metadata</span>
+                              {selectedDoc.documentType && (
+                                <Badge variant="outline" className="text-[10px] px-1 py-0">
+                                  {selectedDoc.documentType.name}
+                                </Badge>
+                              )}
+                            </div>
+                            {!isEditingMetadata ? (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-6 text-xs text-blue-600 hover:text-blue-700 px-1.5"
+                                onClick={handleStartEditMetadata}
+                              >
+                                <Edit2 className="h-3 w-3 mr-1" /> Edit Metadata
+                              </Button>
+                            ) : (
+                              <button
+                                type="button"
+                                className="text-xs text-slate-400 hover:text-slate-600"
+                                onClick={() => setIsEditingMetadata(false)}
+                              >
+                                Cancel
+                              </button>
+                            )}
+                          </div>
+
+                          {/* Dynamic Metadata Form */}
+                          {isEditingMetadata ? (
+                            <form onSubmit={handleSaveMetadata} className="space-y-3 rounded-lg border border-blue-200 bg-blue-50/30 p-3">
+                              {/* Change Document Type */}
+                              <div>
+                                <label className="block text-2xs font-semibold uppercase tracking-wider text-slate-500 mb-1">
+                                  Document Classification / Type
+                                </label>
+                                <select
+                                  value={selectedDoc.documentTypeId || ''}
+                                  onChange={(e) => handleUpdateDocumentType(e.target.value)}
+                                  className="w-full h-8 text-xs rounded border border-slate-300 bg-white px-2 focus:ring-1 focus:ring-blue-600"
+                                >
+                                  <option value="">Unclassified / None</option>
+                                  {documentTypes.map((dt) => (
+                                    <option key={dt.id} value={dt.id}>
+                                      {dt.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+
+                              {/* Dynamic Fields */}
+                              {(() => {
+                                const currentDocType = documentTypes.find((dt) => dt.id === selectedDoc.documentTypeId);
+                                const fields = currentDocType?.fields || [];
+                                if (fields.length === 0) {
+                                  return (
+                                    <p className="text-xs text-slate-500 italic">
+                                      {selectedDoc.documentTypeId
+                                        ? 'No custom fields configured for this document type.'
+                                        : 'Select a document type above to populate custom schema fields.'}
+                                    </p>
+                                  );
+                                }
+
+                                return (
+                                  <div className="space-y-2.5 pt-1">
+                                    {fields.map((f) => {
+                                      const val = metadataFormValues[f.key];
+                                      const err = metadataErrors[f.key];
+                                      return (
+                                        <div key={f.id} className="space-y-1">
+                                          <div className="flex items-center justify-between">
+                                            <label className="text-xs font-semibold text-slate-700">
+                                              {f.name} {f.required && <span className="text-red-500">*</span>}
+                                            </label>
+                                            <span className="text-[10px] text-slate-400 font-mono">{f.type}</span>
+                                          </div>
+
+                                          {f.type === 'TEXT' && (
+                                            <input
+                                              type="text"
+                                              value={val !== undefined && val !== null ? String(val) : ''}
+                                              onChange={(e) =>
+                                                setMetadataFormValues({ ...metadataFormValues, [f.key]: e.target.value })
+                                              }
+                                              className="w-full h-8 text-xs rounded border border-slate-300 bg-white px-2 focus:ring-1 focus:ring-blue-600"
+                                              placeholder={`Enter ${f.name.toLowerCase()}...`}
+                                            />
+                                          )}
+
+                                          {f.type === 'NUMBER' && (
+                                            <input
+                                              type="number"
+                                              step="any"
+                                              value={val !== undefined && val !== null ? String(val) : ''}
+                                              onChange={(e) =>
+                                                setMetadataFormValues({
+                                                  ...metadataFormValues,
+                                                  [f.key]: e.target.value === '' ? '' : Number(e.target.value),
+                                                })
+                                              }
+                                              className="w-full h-8 text-xs rounded border border-slate-300 bg-white px-2 focus:ring-1 focus:ring-blue-600"
+                                              placeholder={`Enter number...`}
+                                            />
+                                          )}
+
+                                          {f.type === 'DATE' && (
+                                            <input
+                                              type="date"
+                                              value={
+                                                val
+                                                  ? String(val).split('T')[0]
+                                                  : ''
+                                              }
+                                              onChange={(e) =>
+                                                setMetadataFormValues({ ...metadataFormValues, [f.key]: e.target.value })
+                                              }
+                                              className="w-full h-8 text-xs rounded border border-slate-300 bg-white px-2 focus:ring-1 focus:ring-blue-600"
+                                            />
+                                          )}
+
+                                          {f.type === 'BOOLEAN' && (
+                                            <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-700 pt-1">
+                                              <input
+                                                type="checkbox"
+                                                checked={Boolean(val)}
+                                                onChange={(e) =>
+                                                  setMetadataFormValues({ ...metadataFormValues, [f.key]: e.target.checked })
+                                                }
+                                                className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                                              />
+                                              <span>{f.name} is enabled / true</span>
+                                            </label>
+                                          )}
+
+                                          {f.type === 'SELECT' && (
+                                            <select
+                                              value={val !== undefined && val !== null ? String(val) : ''}
+                                              onChange={(e) =>
+                                                setMetadataFormValues({ ...metadataFormValues, [f.key]: e.target.value })
+                                              }
+                                              className="w-full h-8 text-xs rounded border border-slate-300 bg-white px-2 focus:ring-1 focus:ring-blue-600"
+                                            >
+                                              <option value="">Select option...</option>
+                                              {f.options?.map((opt) => (
+                                                <option key={opt} value={opt}>
+                                                  {opt}
+                                                </option>
+                                              ))}
+                                            </select>
+                                          )}
+
+                                          {f.type === 'MULTI_SELECT' && (
+                                            <div className="flex flex-wrap gap-1.5 pt-1">
+                                              {f.options?.map((opt) => {
+                                                const selectedList: string[] = Array.isArray(val) ? (val as string[]) : [];
+                                                const isChecked = selectedList.includes(opt);
+                                                return (
+                                                  <button
+                                                    type="button"
+                                                    key={opt}
+                                                    onClick={() => {
+                                                      const updated = isChecked
+                                                        ? selectedList.filter((item) => item !== opt)
+                                                        : [...selectedList, opt];
+                                                      setMetadataFormValues({ ...metadataFormValues, [f.key]: updated });
+                                                    }}
+                                                    className={`px-2 py-0.5 rounded text-[11px] font-medium border transition-colors ${
+                                                      isChecked
+                                                        ? 'bg-blue-600 text-white border-blue-600'
+                                                        : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                                                    }`}
+                                                  >
+                                                    {opt}
+                                                  </button>
+                                                );
+                                              })}
+                                            </div>
+                                          )}
+
+                                          {err && <p className="text-[10px] text-red-600">{err}</p>}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                );
+                              })()}
+
+                              <div className="flex justify-end gap-2 pt-2 border-t border-blue-200/60">
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-7 text-xs"
+                                  onClick={() => setIsEditingMetadata(false)}
+                                >
+                                  Cancel
+                                </Button>
+                                <Button
+                                  type="submit"
+                                  variant="primary"
+                                  size="sm"
+                                  className="h-7 text-xs"
+                                  disabled={isSavingMetadata}
+                                >
+                                  {isSavingMetadata ? 'Saving...' : 'Save Metadata'}
+                                </Button>
+                              </div>
+                            </form>
+                          ) : (
+                            /* View State */
+                            <div className="rounded-md bg-slate-50 p-2.5 border border-slate-100 space-y-2">
+                              {(() => {
+                                const currentDocType = documentTypes.find((dt) => dt.id === selectedDoc.documentTypeId);
+                                const fields = currentDocType?.fields || [];
+                                const entries = selectedDoc.metadata ? Object.entries(selectedDoc.metadata) : [];
+
+                                if (entries.length === 0) {
+                                  return (
+                                    <p className="text-xs text-slate-400 italic py-1">
+                                      No custom metadata configured. Click "Edit Metadata" to add details.
+                                    </p>
+                                  );
+                                }
+
+                                return (
+                                  <div className="space-y-1.5">
+                                    {entries.map(([k, v]) => {
+                                      const matchingField = fields.find((f) => f.key === k);
+                                      const label = matchingField ? matchingField.name : k;
+                                      const displayVal = Array.isArray(v)
+                                        ? v.join(', ')
+                                        : typeof v === 'boolean'
+                                        ? v ? 'Yes' : 'No'
+                                        : String(v);
+
+                                      return (
+                                        <div key={k} className="flex items-center justify-between text-xs text-slate-600">
+                                          <span className="font-medium text-slate-500">{label}:</span>
+                                          <span className="font-semibold text-slate-800 text-right truncate max-w-[180px]" title={displayVal}>
+                                            {displayVal}
+                                          </span>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                );
+                              })()}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* VERSIONS TAB */}
+                    {drawerTab === 'versions' && (
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <span className="font-semibold text-slate-800">Version History</span>
+                          <Button variant="outline" size="sm" onClick={() => setIsVersionUploadOpen(true)}>
+                            <Upload className="mr-1 h-3 w-3" /> New Version
+                          </Button>
+                        </div>
+
+                        {isLoadingVersions ? (
+                          <p className="text-slate-400 text-center py-4">Loading versions...</p>
+                        ) : (
+                          <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                            {versions.map((v, idx) => (
+                              <div
+                                key={v.id}
+                                className="rounded-md border border-slate-200 p-2.5 bg-white flex items-center justify-between gap-2"
+                              >
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="font-bold text-slate-900 shrink-0">v{v.versionNumber}</span>
+                                    {idx === 0 && <Badge variant="success" className="text-[9px] px-1">Active</Badge>}
+                                    <span className="text-[11px] text-slate-600 truncate" title={v.fileName}>
+                                      {v.fileName}
+                                    </span>
+                                  </div>
+                                  <p className="text-[10px] text-slate-400 mt-0.5 truncate">
+                                    {formatDateTime(v.createdAt)} • {formatBytes(v.fileSize)}
+                                    {v.changeDescription && ` • "${v.changeDescription}"`}
+                                  </p>
+                                </div>
+
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => handleDownloadFile(selectedDoc.id, v.versionNumber)}
+                                    className="text-[11px] text-slate-600 hover:text-blue-600 h-7 px-1.5"
+                                    title={`Download v${v.versionNumber}`}
+                                  >
+                                    <Download className="h-3.5 w-3.5" />
+                                  </Button>
+                                  {idx !== 0 && (
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => handleRestoreVersion(v)}
+                                      className="text-[11px] text-blue-600 hover:text-blue-700 h-7 px-1.5"
+                                    >
+                                      Restore
+                                    </Button>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* COMMENTS TAB */}
+                    {drawerTab === 'comments' && (
+                      <div className="space-y-3">
+                        {/* New Comment Input */}
+                        <form onSubmit={handleAddComment} className="space-y-2">
+                          <textarea
+                            value={newCommentText}
+                            onChange={(e) => setNewCommentText(e.target.value)}
+                            placeholder="Add a comment or review note..."
+                            rows={2}
+                            className="w-full rounded-md border border-slate-200 bg-slate-50 p-2 text-xs text-slate-900 placeholder:text-slate-400 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-600"
+                          />
+                          <div className="flex justify-end">
+                            <Button
+                              type="submit"
+                              size="sm"
+                              disabled={isSubmittingComment || !newCommentText.trim()}
+                              className="h-7 text-xs"
+                            >
+                              <Send className="mr-1 h-3 w-3" /> Post Comment
+                            </Button>
+                          </div>
+                        </form>
+
+                        {/* Comments Thread */}
+                        {isLoadingComments ? (
+                          <p className="text-slate-400 text-center py-4">Loading comments...</p>
+                        ) : comments.length === 0 ? (
+                          <div className="py-6 text-center text-slate-400">
+                            <MessageSquare className="mx-auto h-6 w-6 text-slate-300 mb-1" />
+                            <p className="text-xs">No comments yet.</p>
+                            <p className="text-3xs text-slate-400">Start the conversation with your team.</p>
+                          </div>
+                        ) : (
+                          <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1">
+                            {comments.map((c) => (
+                              <div
+                                key={c.id}
+                                className="rounded-lg border border-slate-100 bg-slate-50/70 p-2.5 space-y-1.5"
+                              >
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-1.5">
+                                    <div className="flex h-5 w-5 items-center justify-center rounded-full bg-blue-600 text-white font-bold text-[9px]">
+                                      {getInitials(c.userName)}
+                                    </div>
+                                    <span className="font-semibold text-slate-800 text-[11px]">{c.userName}</span>
+                                    <span className="text-[10px] text-slate-400">{formatDateTime(c.createdAt)}</span>
+                                  </div>
+                                  {c.userId === user.id && (
+                                    <button
+                                      onClick={() => handleDeleteComment(c.id)}
+                                      className="rounded p-0.5 text-slate-400 hover:text-red-600"
+                                      title="Delete Comment"
+                                    >
+                                      <Trash2 className="h-3 w-3" />
+                                    </button>
+                                  )}
+                                </div>
+                                <p className="text-slate-700 text-xs whitespace-pre-wrap pl-6">{c.content}</p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* ACTIVITY TAB */}
+                    {drawerTab === 'activity' && (
+                      <div className="space-y-3">
+                        {isLoadingActivity ? (
+                          <p className="text-slate-400 text-center py-4">Loading audit logs...</p>
+                        ) : activityLogs.length === 0 ? (
+                          <div className="py-6 text-center text-slate-400">
+                            <History className="mx-auto h-6 w-6 text-slate-300 mb-1" />
+                            <p className="text-xs">No activity records yet.</p>
+                          </div>
+                        ) : (
+                          <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                            {activityLogs.map((log) => (
+                              <div
+                                key={log.id}
+                                className="rounded-md border border-slate-100 bg-slate-50 p-2 space-y-1 text-xs"
+                              >
+                                <div className="flex items-center justify-between">
+                                  <Badge variant="outline" className="text-[9px] px-1 font-mono">
+                                    {log.action}
+                                  </Badge>
+                                  <span className="text-[10px] text-slate-400">{formatDateTime(log.createdAt)}</span>
+                                </div>
+                                <p className="text-[11px] text-slate-600 truncate">
+                                  by {log.userEmail || log.userId || 'System'}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
       {/* Document Types Tab */}
       {activeTab === 'types' && (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <p className="text-xs text-slate-500">
-              Document types define standard business classification schemas and metadata field definitions.
-            </p>
-            <Button size="sm" onClick={() => setIsCreateTypeOpen(true)}>
-              <Plus className="mr-1.5 h-3.5 w-3.5" /> Define Document Type
-            </Button>
-          </div>
-
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {documentTypes.map((dt) => (
-              <Card key={dt.id}>
-                <CardHeader className="pb-3">
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="text-sm font-bold text-slate-900">{dt.name}</CardTitle>
-                    <Layers className="h-4 w-4 text-indigo-600" />
-                  </div>
-                  <CardDescription className="text-xs">
-                    {dt.description || 'No description provided'}
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="pt-0 text-xs">
-                  <span className="font-semibold text-slate-700 block mb-2">Schema Fields</span>
-                  {dt.fields && dt.fields.length > 0 ? (
-                    <div className="space-y-1.5">
-                      {dt.fields.map((f) => (
-                        <div
-                          key={f.id}
-                          className="flex items-center justify-between rounded bg-slate-50 px-2 py-1 text-slate-600 border border-slate-100"
-                        >
-                          <span className="font-medium">{f.name}</span>
-                          <div className="flex items-center gap-1.5">
-                            <Badge variant="secondary" className="text-[9px] px-1">
-                              {f.type}
-                            </Badge>
-                            {f.required && (
-                              <span className="text-[9px] text-red-500 font-bold">Required</span>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-slate-400">No custom fields defined</p>
-                  )}
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        </div>
+        <DocumentTypesManager
+          onTypesUpdated={fetchData}
+          canManage={user.roles.some((r) => r.name === 'SUPER_ADMIN' || r.name === 'ORG_ADMIN')}
+        />
       )}
 
       {/* Tags Tab */}
@@ -994,19 +2360,49 @@ export function DocumentsView({ user }: DocumentsViewProps) {
             </Button>
           </div>
 
-          <div className="flex flex-wrap gap-2.5 p-6 rounded-lg border border-slate-200 bg-white shadow-2xs">
-            {tags.map((tag) => (
-              <div
-                key={tag.id}
-                className="flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-800"
-              >
-                <TagIcon className="h-3.5 w-3.5 text-slate-400" />
-                <span>{tag.name}</span>
-                <span className="text-[10px] text-slate-400 font-normal">
-                  ({documents.filter((d) => d.tags?.some((t) => t.id === tag.id)).length} docs)
-                </span>
-              </div>
-            ))}
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+            {tags.map((tag) => {
+              const docCount = documents.filter((d) => d.tags?.some((t) => t.id === tag.id)).length;
+              return (
+                <div
+                  key={tag.id}
+                  className="flex items-center justify-between rounded-lg border border-slate-200 bg-white p-3.5 shadow-2xs hover:border-slate-300 transition-colors"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-md bg-blue-50 text-blue-600 shrink-0">
+                      <TagIcon className="h-4 w-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <span className="text-xs font-bold text-slate-900 block truncate">{tag.name}</span>
+                      <span className="text-[10px] text-slate-400">{docCount} document(s)</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      onClick={() => {
+                        setSelectedTagFilter(tag.id);
+                        setActiveTab('explorer');
+                      }}
+                      className="rounded px-2 py-1 text-[11px] font-medium text-blue-600 hover:bg-blue-50 hover:text-blue-700"
+                      title="Filter documents by this tag"
+                    >
+                      Filter
+                    </button>
+                    <button
+                      onClick={() => {
+                        setTagToDelete(tag);
+                        setIsDeleteTagOpen(true);
+                      }}
+                      className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
+                      title="Delete Tag"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -1305,6 +2701,197 @@ export function DocumentsView({ user }: DocumentsViewProps) {
           }
         }}
       />
+      {/* Phase 2C: Inline Text Viewer Modal */}
+      <TextViewerModal
+        isOpen={isTextViewerOpen}
+        onClose={() => {
+          setIsTextViewerOpen(false);
+          setTextViewerDocId(null);
+        }}
+        documentId={textViewerDocId}
+        documentName={textViewerDocName}
+      />
+
+      {/* Phase 2D: Bulk Add Tag Modal */}
+      <Modal isOpen={isBulkAddTagOpen} onClose={() => setIsBulkAddTagOpen(false)} title="Bulk Add Tag">
+        <div className="space-y-4">
+          <p className="text-xs text-slate-600">
+            Select a tag to assign to all <strong>{selectedDocIds.length}</strong> selected documents:
+          </p>
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">Select Tag</label>
+            <select
+              value={bulkTagId}
+              onChange={(e) => setBulkTagId(e.target.value)}
+              className="w-full h-9 rounded-md border border-slate-300 px-3 text-xs text-slate-900 focus:border-blue-600 focus:outline-none"
+            >
+              <option value="">Choose a tag...</option>
+              {tags.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" size="sm" onClick={() => setIsBulkAddTagOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={isSubmittingBulk || !bulkTagId}
+              onClick={() => handleExecuteBulkAction('add-tag')}
+            >
+              {isSubmittingBulk ? 'Applying...' : `Assign Tag to ${selectedDocIds.length} Document(s)`}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Phase 2D: Bulk Remove Tag Modal */}
+      <Modal isOpen={isBulkRemoveTagOpen} onClose={() => setIsBulkRemoveTagOpen(false)} title="Bulk Remove Tag">
+        <div className="space-y-4">
+          <p className="text-xs text-slate-600">
+            Select a tag to remove from the <strong>{selectedDocIds.length}</strong> selected documents:
+          </p>
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">Select Tag</label>
+            <select
+              value={bulkRemoveTagId}
+              onChange={(e) => setBulkRemoveTagId(e.target.value)}
+              className="w-full h-9 rounded-md border border-slate-300 px-3 text-xs text-slate-900 focus:border-blue-600 focus:outline-none"
+            >
+              <option value="">Choose a tag to remove...</option>
+              {tags.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" size="sm" onClick={() => setIsBulkRemoveTagOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={isSubmittingBulk || !bulkRemoveTagId}
+              onClick={() => handleExecuteBulkAction('remove-tag')}
+            >
+              {isSubmittingBulk ? 'Removing...' : `Remove Tag from ${selectedDocIds.length} Document(s)`}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Phase 2D: Bulk Move Modal */}
+      <Modal isOpen={isBulkMoveOpen} onClose={() => setIsBulkMoveOpen(false)} title="Bulk Move Documents">
+        <div className="space-y-4">
+          <p className="text-xs text-slate-600">
+            Move <strong>{selectedDocIds.length}</strong> selected documents to destination folder:
+          </p>
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">Destination Folder</label>
+            <select
+              value={bulkTargetFolderId || ''}
+              onChange={(e) => setBulkTargetFolderId(e.target.value ? e.target.value : null)}
+              className="w-full h-9 rounded-md border border-slate-300 px-3 text-xs text-slate-900 focus:border-blue-600 focus:outline-none"
+            >
+              <option value="">Root Folder</option>
+              {folders.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" size="sm" onClick={() => setIsBulkMoveOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={isSubmittingBulk}
+              onClick={() => handleExecuteBulkAction('move')}
+            >
+              {isSubmittingBulk ? 'Moving...' : `Move ${selectedDocIds.length} Document(s)`}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Phase 2D: Bulk Archive Modal */}
+      <Modal isOpen={isBulkArchiveOpen} onClose={() => setIsBulkArchiveOpen(false)} title="Bulk Archive Confirmation">
+        <div className="space-y-4">
+          <p className="text-xs text-slate-600">
+            Are you sure you want to archive <strong>{selectedDocIds.length}</strong> selected documents?
+            Their status will be set to <strong>ARCHIVED</strong>.
+          </p>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" size="sm" onClick={() => setIsBulkArchiveOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={isSubmittingBulk}
+              onClick={() => handleExecuteBulkAction('archive')}
+            >
+              {isSubmittingBulk ? 'Archiving...' : `Archive ${selectedDocIds.length} Document(s)`}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Phase 2D: Bulk Delete Modal */}
+      <Modal isOpen={isBulkDeleteOpen} onClose={() => setIsBulkDeleteOpen(false)} title="Bulk Delete Confirmation">
+        <div className="space-y-4">
+          <div className="rounded-md bg-rose-50 p-3 text-xs text-rose-800 border border-rose-200">
+            <p className="font-semibold">Move documents to Trash?</p>
+            <p className="mt-1">
+              You are about to move <strong>{selectedDocIds.length}</strong> document(s) to the Trash.
+              They can be restored later from the Trash folder if needed.
+            </p>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" size="sm" onClick={() => setIsBulkDeleteOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={isSubmittingBulk}
+              onClick={() => handleExecuteBulkAction('delete')}
+            >
+              {isSubmittingBulk ? 'Deleting...' : `Move ${selectedDocIds.length} to Trash`}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Phase 2D: Delete Tag Confirmation Modal */}
+      <Modal isOpen={isDeleteTagOpen} onClose={() => setIsDeleteTagOpen(false)} title="Delete Tag Confirmation">
+        <div className="space-y-4">
+          <p className="text-xs text-slate-600">
+            Are you sure you want to delete tag <strong>"{tagToDelete?.name}"</strong>? It will be removed from all documents across your organization.
+          </p>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" size="sm" onClick={() => setIsDeleteTagOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={handleDeleteTag}
+            >
+              Delete Tag
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }
