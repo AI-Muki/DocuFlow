@@ -13,14 +13,32 @@ export interface DialogProps {
 }
 
 export function Dialog({ open, onOpenChange, title, description, children, footer, className }: DialogProps) {
+  React.useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onOpenChange(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [open, onOpenChange]);
+
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="dialog-title"
+      aria-describedby={description ? 'dialog-description' : undefined}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+    >
       {/* Backdrop */}
       <div
         className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs transition-opacity"
         onClick={() => onOpenChange(false)}
+        aria-hidden="true"
       />
 
       {/* Dialog Window */}
@@ -32,12 +50,14 @@ export function Dialog({ open, onOpenChange, title, description, children, foote
       >
         <div className="flex items-start justify-between pb-4 border-b border-slate-100">
           <div>
-            <h3 className="text-base font-semibold text-slate-900">{title}</h3>
-            {description && <p className="mt-1 text-xs text-slate-500">{description}</p>}
+            <h3 id="dialog-title" className="text-base font-semibold text-slate-900">{title}</h3>
+            {description && <p id="dialog-description" className="mt-1 text-xs text-slate-500">{description}</p>}
           </div>
           <button
+            type="button"
             onClick={() => onOpenChange(false)}
             className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors"
+            aria-label="Close dialog"
           >
             <X className="h-4 w-4" />
           </button>

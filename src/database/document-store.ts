@@ -5,19 +5,26 @@ import type {
   DocumentComment,
   DocumentFieldDefinition,
   DocumentFieldValue,
+  DocumentFilterOptions,
+  DocumentSortBy,
+  DocumentSortOrder,
   DocumentStatus,
   DocumentType,
   DocumentVersion,
   Folder,
+  PaginatedDocuments,
+  PaginationMeta,
   Tag,
   User,
 } from '../types/index.ts';
 import { ConflictError, ForbiddenError, NotFoundError, TenantViolationError, ValidationError } from '../lib/errors.ts';
 import { validateFieldValue, validateMetadataRecord } from '../modules/documents/metadata-validator.ts';
+import { store } from './store.ts';
 
 export class DocumentStoreExtension {
   private folders: Map<string, Folder> = new Map();
   private documents: Map<string, Document> = new Map();
+  private orgDocIndex: Map<string, Set<string>> = new Map(); // organizationId -> Set of documentIds
   private documentVersions: Map<string, DocumentVersion[]> = new Map(); // documentId -> versions[]
   private documentTypes: Map<string, DocumentType> = new Map();
   private fieldDefinitions: Map<string, DocumentFieldDefinition> = new Map();
@@ -26,6 +33,17 @@ export class DocumentStoreExtension {
   private documentTags: Map<string, Set<string>> = new Map(); // documentId -> Set of tagIds
   private documentFavorites: Map<string, Set<string>> = new Map(); // documentId -> Set of userIds
   private documentComments: Map<string, DocumentComment[]> = new Map(); // documentId -> DocumentComment[]
+
+  private indexDocument(organizationId: string, docId: string): void {
+    if (!this.orgDocIndex.has(organizationId)) {
+      this.orgDocIndex.set(organizationId, new Set());
+    }
+    this.orgDocIndex.get(organizationId)!.add(docId);
+  }
+
+  private unindexDocument(organizationId: string, docId: string): void {
+    this.orgDocIndex.get(organizationId)?.delete(docId);
+  }
 
   private generateId(prefix?: string): string {
     const raw = randomUUID();
@@ -198,6 +216,7 @@ export class DocumentStoreExtension {
         deletedAt: null,
       };
       this.documents.set(doc1Id, doc1);
+      this.indexDocument(demoOrgId, doc1Id);
 
       // Version 1
       const v1: DocumentVersion = {
@@ -700,78 +719,325 @@ export class DocumentStoreExtension {
     return this.hydrateDocument(doc, userId);
   }
 
-  public getDocuments(
+  public executeFilteredDocumentQuery(
     organizationId: string,
-    filter?: {
-      folderId?: string | null;
-      documentTypeId?: string;
-      status?: DocumentStatus;
-      ownerId?: string;
-      search?: string;
-      view?: 'all' | 'favorites' | 'recent' | 'trash';
-      userId?: string;
-      tagId?: string;
-      tag?: string;
+    filter?: DocumentFilterOptions
+  ): PaginatedDocuments {
+    // 1. Gather tenant candidate documents using orgDocIndex if available for fast O(1) lookup
+    let candidateDocs: Document[];
+    const tenantDocIds = this.orgDocIndex.get(organizationId);
+    if (tenantDocIds !== undefined) {
+      candidateDocs = [];
+      for (const id of tenantDocIds) {
+        const d = this.documents.get(id);
+        if (d && d.organizationId === organizationId) {
+          candidateDocs.push(d);
+        }
+      }
+    } else {
+      candidateDocs = Array.from(this.documents.values()).filter((d) => d.organizationId === organizationId);
     }
-  ): Document[] {
-    const list = Array.from(this.documents.values()).filter((doc) => {
-      if (doc.organizationId !== organizationId) return false;
 
+    // 2. Pre-cache search scores and term arrays if search query provided
+    const searchScores = new Map<string, number>();
+    const searchRaw = filter?.search ? filter.search.trim().toLowerCase() : '';
+    const searchTokens = searchRaw ? searchRaw.split(/\s+/).filter(Boolean) : [];
+
+    // Parse date boundaries
+    const createdFromMs = filter?.createdFrom ? new Date(filter.createdFrom).getTime() : null;
+    let createdToMs = filter?.createdTo ? new Date(filter.createdTo).getTime() : null;
+    if (createdToMs !== null && filter?.createdTo && filter.createdTo.length === 10) {
+      createdToMs += 86399999; // full end of day
+    }
+
+    const updatedFromMs = filter?.updatedFrom ? new Date(filter.updatedFrom).getTime() : null;
+    let updatedToMs = filter?.updatedTo ? new Date(filter.updatedTo).getTime() : null;
+    if (updatedToMs !== null && filter?.updatedTo && filter.updatedTo.length === 10) {
+      updatedToMs += 86399999; // full end of day
+    }
+
+    // 3. Filter matching documents
+    const matchingDocs = candidateDocs.filter((doc) => {
+      // Trash vs Active view
       if (filter?.view === 'trash') {
         if (doc.deletedAt === null) return false;
       } else {
         if (doc.deletedAt !== null) return false;
       }
 
-      if (filter) {
-        if (filter.view === 'favorites' && filter.userId) {
-          if (!this.isFavorite(doc.id, filter.userId)) return false;
-        }
+      // Favorites view
+      if (filter?.view === 'favorites' && filter?.userId) {
+        if (!this.isFavorite(doc.id, filter.userId)) return false;
+      }
 
-        if (
-          filter.folderId !== undefined &&
-          filter.view !== 'trash' &&
-          filter.view !== 'favorites' &&
-          filter.view !== 'recent'
+      // Folder filter
+      if (
+        filter?.folderId !== undefined &&
+        filter?.view !== 'trash' &&
+        filter?.view !== 'favorites' &&
+        filter?.view !== 'recent'
+      ) {
+        if (doc.folderId !== filter.folderId) return false;
+      }
+
+      // Document Type filter
+      if (filter?.documentTypeId) {
+        if (doc.documentTypeId !== filter.documentTypeId) {
+          const dt = doc.documentTypeId ? this.documentTypes.get(doc.documentTypeId) : null;
+          if (!dt || dt.name.toLowerCase() !== filter.documentTypeId.toLowerCase()) {
+            return false;
+          }
+        }
+      }
+
+      // Status filter
+      if (filter?.status && doc.status !== filter.status) {
+        return false;
+      }
+
+      // Owner filter
+      if (filter?.ownerId) {
+        if (doc.ownerId !== filter.ownerId && doc.createdById !== filter.ownerId) {
+          const owner = store.findUserById(doc.ownerId);
+          const ownerName = owner ? `${owner.firstName} ${owner.lastName}`.toLowerCase() : '';
+          const ownerEmail = owner ? owner.email.toLowerCase() : '';
+          const target = filter.ownerId.toLowerCase();
+          if (!ownerName.includes(target) && !ownerEmail.includes(target)) {
+            return false;
+          }
+        }
+      }
+
+      // Single Tag filter by tagId
+      if (filter?.tagId) {
+        const docTags = this.documentTags.get(doc.id);
+        if (!docTags || !docTags.has(filter.tagId)) return false;
+      }
+
+      // Single Tag filter by tag name or ID
+      if (filter?.tag) {
+        const docTags = this.documentTags.get(doc.id);
+        if (!docTags || docTags.size === 0) return false;
+        const matchTag = Array.from(docTags)
+          .map((tId) => this.tags.get(tId))
+          .find((t) => t && (t.id === filter.tag || t.name.toLowerCase() === filter.tag!.toLowerCase()));
+        if (!matchTag) return false;
+      }
+
+      // Multiple tags filter (tagIds)
+      if (filter?.tagIds && filter.tagIds.length > 0) {
+        const docTags = this.documentTags.get(doc.id);
+        if (!docTags || docTags.size === 0) return false;
+        const hasMatch = filter.tagIds.some((tId) => docTags.has(tId));
+        if (!hasMatch) return false;
+      }
+
+      // Created date range
+      if (createdFromMs !== null && !isNaN(createdFromMs)) {
+        if (new Date(doc.createdAt).getTime() < createdFromMs) return false;
+      }
+      if (createdToMs !== null && !isNaN(createdToMs)) {
+        if (new Date(doc.createdAt).getTime() > createdToMs) return false;
+      }
+
+      // Updated date range
+      if (updatedFromMs !== null && !isNaN(updatedFromMs)) {
+        if (new Date(doc.updatedAt).getTime() < updatedFromMs) return false;
+      }
+      if (updatedToMs !== null && !isNaN(updatedToMs)) {
+        if (new Date(doc.updatedAt).getTime() > updatedToMs) return false;
+      }
+
+      // File size range
+      if (filter?.minSize !== undefined && filter.minSize !== null) {
+        if (doc.fileSize < filter.minSize) return false;
+      }
+      if (filter?.maxSize !== undefined && filter.maxSize !== null) {
+        if (doc.fileSize > filter.maxSize) return false;
+      }
+
+      // File type / extension filter
+      if (filter?.fileType) {
+        const ft = filter.fileType.toLowerCase().trim();
+        const fileNameLower = (doc.originalFileName || '').toLowerCase();
+        const mimeLower = (doc.mimeType || '').toLowerCase();
+        let matches = false;
+
+        if (ft === 'pdf') {
+          matches = fileNameLower.endsWith('.pdf') || mimeLower.includes('pdf');
+        } else if (ft === 'document' || ft === 'word' || ft === 'doc' || ft === 'docx') {
+          matches =
+            fileNameLower.endsWith('.doc') ||
+            fileNameLower.endsWith('.docx') ||
+            mimeLower.includes('word') ||
+            mimeLower.includes('document');
+        } else if (
+          ft === 'spreadsheet' ||
+          ft === 'excel' ||
+          ft === 'sheet' ||
+          ft === 'xlsx' ||
+          ft === 'xls' ||
+          ft === 'csv'
         ) {
-          if (doc.folderId !== filter.folderId) return false;
+          matches =
+            fileNameLower.endsWith('.xls') ||
+            fileNameLower.endsWith('.xlsx') ||
+            fileNameLower.endsWith('.csv') ||
+            mimeLower.includes('sheet') ||
+            mimeLower.includes('csv') ||
+            mimeLower.includes('excel');
+        } else if (ft === 'presentation' || ft === 'powerpoint' || ft === 'ppt' || ft === 'pptx') {
+          matches =
+            fileNameLower.endsWith('.ppt') ||
+            fileNameLower.endsWith('.pptx') ||
+            mimeLower.includes('presentation') ||
+            mimeLower.includes('powerpoint');
+        } else if (ft === 'image' || ft === 'img') {
+          matches = mimeLower.startsWith('image/') || /\.(png|jpe?g|gif|webp|svg)$/i.test(fileNameLower);
+        } else if (ft === 'text' || ft === 'txt') {
+          matches = mimeLower.startsWith('text/') || /\.(txt|md|log|json|xml|csv)$/i.test(fileNameLower);
+        } else if (ft === 'archive' || ft === 'zip') {
+          matches =
+            mimeLower.includes('zip') ||
+            mimeLower.includes('compressed') ||
+            /\.(zip|tar|gz|7z|rar)$/i.test(fileNameLower);
+        } else {
+          const cleanExt = ft.startsWith('.') ? ft : `.${ft}`;
+          matches = fileNameLower.endsWith(cleanExt) || mimeLower.includes(ft);
         }
-        if (filter.documentTypeId && doc.documentTypeId !== filter.documentTypeId) return false;
-        if (filter.status && doc.status !== filter.status) return false;
-        if (filter.ownerId && doc.ownerId !== filter.ownerId) return false;
+        if (!matches) return false;
+      }
 
-        // Tag filter
-        if (filter.tagId) {
-          const docTags = this.documentTags.get(doc.id);
-          if (!docTags || !docTags.has(filter.tagId)) return false;
-        }
-        if (filter.tag) {
-          const docTags = this.documentTags.get(doc.id);
-          if (!docTags || docTags.size === 0) return false;
-          const matchTag = Array.from(docTags)
-            .map((tId) => this.tags.get(tId))
-            .find((t) => t && (t.id === filter.tag || t.name.toLowerCase() === filter.tag!.toLowerCase()));
-          if (!matchTag) return false;
+      // Search across filename, document name, description, tags, document type
+      if (searchTokens.length > 0) {
+        const docNameLower = doc.name.toLowerCase();
+        const fileNameLower = (doc.originalFileName || '').toLowerCase();
+        const descLower = (doc.description || '').toLowerCase();
+
+        const docTagIds = this.documentTags.get(doc.id) || new Set();
+        const docTagNames = Array.from(docTagIds)
+          .map((tId) => this.tags.get(tId)?.name.toLowerCase() || '')
+          .filter(Boolean);
+
+        const docTypeName = doc.documentTypeId
+          ? this.documentTypes.get(doc.documentTypeId)?.name.toLowerCase() || ''
+          : '';
+
+        const versionFileNames = (this.documentVersions.get(doc.id) || []).map((v) =>
+          v.fileName.toLowerCase()
+        );
+
+        const corpus = `${docNameLower} ${fileNameLower} ${descLower} ${docTagNames.join(' ')} ${docTypeName} ${versionFileNames.join(' ')}`;
+
+        // Match all search terms (PostgreSQL text search AND query semantics)
+        const allTermsMatch = searchTokens.every((token) => corpus.includes(token));
+        if (!allTermsMatch) return false;
+
+        // Calculate search relevance score
+        let score = 0;
+        if (docNameLower === searchRaw) score += 100;
+        else if (docNameLower.includes(searchRaw)) score += 50;
+        if (fileNameLower.includes(searchRaw)) score += 40;
+        if (docTypeName.includes(searchRaw)) score += 30;
+        if (docTagNames.some((t) => t.includes(searchRaw))) score += 25;
+
+        for (const token of searchTokens) {
+          if (docNameLower.includes(token)) score += 15;
+          if (fileNameLower.includes(token)) score += 10;
+          if (docTypeName.includes(token)) score += 8;
+          if (docTagNames.some((t) => t.includes(token))) score += 8;
+          if (descLower.includes(token)) score += 4;
         }
 
-        if (filter.search) {
-          const s = filter.search.toLowerCase();
-          const match =
-            doc.name.toLowerCase().includes(s) ||
-            doc.originalFileName.toLowerCase().includes(s) ||
-            (doc.description && doc.description.toLowerCase().includes(s));
-          if (!match) return false;
-        }
+        searchScores.set(doc.id, score);
       }
 
       return true;
     });
 
-    if (filter?.view === 'recent') {
-      list.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    // 4. Sorting
+    if (filter?.sortBy) {
+      const order = filter.sortOrder === 'asc' ? 1 : -1;
+      matchingDocs.sort((a, b) => {
+        switch (filter.sortBy) {
+          case 'name':
+            return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }) * order;
+          case 'createdAt':
+          case 'created':
+            return (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()) * order;
+          case 'updatedAt':
+          case 'modified':
+            return (new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime()) * order;
+          case 'fileSize':
+          case 'size':
+            return (a.fileSize - b.fileSize) * order;
+          case 'documentType':
+          case 'type': {
+            const typeA = a.documentTypeId ? this.documentTypes.get(a.documentTypeId)?.name || '' : a.mimeType;
+            const typeB = b.documentTypeId ? this.documentTypes.get(b.documentTypeId)?.name || '' : b.mimeType;
+            return typeA.localeCompare(typeB, undefined, { numeric: true, sensitivity: 'base' }) * order;
+          }
+          default:
+            return (new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()) * order;
+        }
+      });
+    } else if (searchScores.size > 0) {
+      // Relevance score sort
+      matchingDocs.sort((a, b) => (searchScores.get(b.id) || 0) - (searchScores.get(a.id) || 0));
+    } else if (filter?.view === 'recent') {
+      matchingDocs.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    } else {
+      // Default: newest updated first
+      matchingDocs.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
     }
 
-    return list.map((d) => this.hydrateDocument(d, filter?.userId));
+    // 5. Server-side Pagination
+    const total = matchingDocs.length;
+    const isPagingRequested = filter?.page !== undefined || filter?.limit !== undefined;
+    const limit = filter?.limit && filter.limit > 0 ? filter.limit : (isPagingRequested ? 20 : total || 20);
+    const totalPages = limit > 0 ? Math.max(1, Math.ceil(total / limit)) : 1;
+    const requestedPage = filter?.page && filter.page > 0 ? filter.page : 1;
+    const page = total > 0 ? Math.min(requestedPage, totalPages) : 1;
+    const startIndex = (page - 1) * limit;
+
+    // Slicing before hydration avoids N+1 overhead
+    const sliced = limit > 0 ? matchingDocs.slice(startIndex, startIndex + limit) : matchingDocs;
+    const hydrated = sliced.map((d) => this.hydrateDocument(d, filter?.userId));
+
+    return {
+      data: hydrated,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages,
+        hasNext: page < totalPages,
+        hasPrev: page > 1,
+      },
+    };
+  }
+
+  public getDocuments(
+    organizationId: string,
+    filter?: DocumentFilterOptions
+  ): Document[] {
+    // If page or limit not explicitly set, retrieve all matching documents
+    if (filter?.page === undefined && filter?.limit === undefined) {
+      const result = this.executeFilteredDocumentQuery(organizationId, {
+        ...filter,
+        limit: 100000,
+      });
+      return result.data;
+    }
+    const result = this.executeFilteredDocumentQuery(organizationId, filter);
+    return result.data;
+  }
+
+  public getDocumentsPaginated(
+    organizationId: string,
+    filter?: DocumentFilterOptions
+  ): PaginatedDocuments {
+    return this.executeFilteredDocumentQuery(organizationId, filter);
   }
 
   // --------------------------------------------------------------------
@@ -919,6 +1185,7 @@ export class DocumentStoreExtension {
     };
 
     this.documents.set(docId, doc);
+    this.indexDocument(organizationId, docId);
 
     // Create Initial Version 1
     const v1: DocumentVersion = {
@@ -1048,7 +1315,7 @@ export class DocumentStoreExtension {
     });
   }
 
-  public deleteDocument(organizationId: string, documentId: string): void {
+  public deleteDocument(organizationId: string, documentId: string, deletedById?: string): void {
     const doc = this.documents.get(documentId);
     if (!doc || doc.organizationId !== organizationId || doc.deletedAt !== null) {
       throw new NotFoundError('Document');
@@ -1056,6 +1323,7 @@ export class DocumentStoreExtension {
 
     const now = new Date().toISOString();
     doc.deletedAt = now;
+    doc.deletedById = deletedById || null;
     doc.status = 'DELETED';
     doc.updatedAt = now;
   }
@@ -1067,6 +1335,7 @@ export class DocumentStoreExtension {
     }
 
     doc.deletedAt = null;
+    doc.deletedById = null;
     doc.status = 'ACTIVE';
     doc.updatedAt = new Date().toISOString();
     return this.hydrateDocument(doc, userId);
@@ -1079,6 +1348,7 @@ export class DocumentStoreExtension {
     }
 
     this.documents.delete(documentId);
+    this.unindexDocument(organizationId, documentId);
     this.documentVersions.delete(documentId);
     this.documentTags.delete(documentId);
     this.documentFavorites.delete(documentId);
@@ -1158,6 +1428,38 @@ export class DocumentStoreExtension {
     return comment;
   }
 
+  public updateDocumentComment(
+    organizationId: string,
+    documentId: string,
+    commentId: string,
+    userId: string,
+    content: string
+  ): DocumentComment {
+    const doc = this.documents.get(documentId);
+    if (!doc || doc.organizationId !== organizationId) {
+      throw new NotFoundError('Document');
+    }
+
+    const list = this.documentComments.get(documentId) || [];
+    const comment = list.find((c) => c.id === commentId);
+    if (!comment) {
+      throw new NotFoundError('Comment');
+    }
+
+    if (comment.userId !== userId) {
+      throw new ForbiddenError('You can only edit your own comments');
+    }
+
+    const trimmed = content.trim();
+    if (!trimmed) {
+      throw new ValidationError('Comment content cannot be empty');
+    }
+
+    comment.content = trimmed;
+    comment.updatedAt = new Date().toISOString();
+    return comment;
+  }
+
   public deleteDocumentComment(organizationId: string, documentId: string, commentId: string, userId: string): void {
     const doc = this.documents.get(documentId);
     if (!doc || doc.organizationId !== organizationId) {
@@ -1198,8 +1500,13 @@ export class DocumentStoreExtension {
     }
 
     const versions = this.documentVersions.get(documentId) || [];
-    // Sort descending by version number
-    return [...versions].sort((a, b) => b.versionNumber - a.versionNumber);
+    // Sort descending by version number with hydrated user info
+    return [...versions]
+      .map((v) => ({
+        ...v,
+        uploadedByUser: store.findUserById(v.uploadedById) || null,
+      }))
+      .sort((a, b) => b.versionNumber - a.versionNumber);
   }
 
   public getDocumentVersion(
@@ -1213,7 +1520,12 @@ export class DocumentStoreExtension {
     }
 
     const versions = this.documentVersions.get(documentId) || [];
-    return versions.find((v) => v.versionNumber === versionNumber) || null;
+    const v = versions.find((ver) => ver.versionNumber === versionNumber) || null;
+    if (!v) return null;
+    return {
+      ...v,
+      uploadedByUser: store.findUserById(v.uploadedById) || null,
+    };
   }
 
   public createDocumentVersion(
@@ -1373,9 +1685,18 @@ export class DocumentStoreExtension {
       .map((tId) => this.tags.get(tId))
       .filter((t): t is Tag => Boolean(t));
 
-    const versions = this.documentVersions.get(doc.id) || [];
+    const versions = (this.documentVersions.get(doc.id) || [])
+      .map((v) => ({
+        ...v,
+        uploadedByUser: store.findUserById(v.uploadedById) || null,
+      }))
+      .sort((a, b) => b.versionNumber - a.versionNumber);
+
     const metadata = this.getDocumentMetadata(doc.organizationId, doc.id, true);
     const isFavorite = userId ? this.isFavorite(doc.id, userId) : false;
+    const owner = store.findUserById(doc.ownerId) || null;
+    const createdBy = store.findUserById(doc.createdById) || null;
+    const deletedBy = doc.deletedById ? store.findUserById(doc.deletedById) || null : null;
 
     return {
       ...doc,
@@ -1385,8 +1706,24 @@ export class DocumentStoreExtension {
       tags,
       versions,
       metadata,
+      owner,
+      createdBy,
+      deletedBy,
     };
   }
 }
 
 export const documentStore = new DocumentStoreExtension();
+
+// If store is already initialized, ensure default demo documents and folders exist
+try {
+  const demoOrg = store.getOrganizationBySlug?.('demo-corp');
+  if (demoOrg) {
+    const adminUser = store.getUsersByOrganization(demoOrg.id).find((u) => u.email === 'admin@democorp.com');
+    if (adminUser) {
+      documentStore.seedPhase2Defaults(demoOrg.id, adminUser.id);
+    }
+  }
+} catch {
+  // Store may still be initializing
+}

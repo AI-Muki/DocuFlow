@@ -99,3 +99,59 @@ export const setDocumentMetadataSchema = z.object({
 export const assignTagSchema = z.object({
   tagId: z.string().min(1),
 });
+
+export const documentQuerySchema = z.object({
+  folderId: z
+    .union([z.string(), z.null()])
+    .optional()
+    .transform((val) => {
+      if (val === undefined) return undefined;
+      if (val === 'null' || val === '' || val === null) return null;
+      if (val === 'all') return undefined;
+      return val;
+    }),
+  documentTypeId: z.string().optional(),
+  status: z
+    .enum(['ACTIVE', 'ARCHIVED', 'PENDING_PROCESSING', 'PROCESSING', 'PROCESSING_FAILED', 'DELETED'])
+    .optional(),
+  ownerId: z.string().optional(),
+  search: z.string().optional(),
+  view: z.enum(['all', 'favorites', 'recent', 'trash']).optional(),
+  tagId: z.string().optional(),
+  tag: z.string().optional(),
+  tagIds: z
+    .union([z.string(), z.array(z.string())])
+    .optional()
+    .transform((val) => {
+      if (!val) return undefined;
+      if (Array.isArray(val)) return val;
+      return val
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+    }),
+  fileType: z.string().optional(),
+  minSize: z.coerce.number().nonnegative().optional(),
+  maxSize: z.coerce.number().nonnegative().optional(),
+  createdFrom: z.string().optional(),
+  createdTo: z.string().optional(),
+  updatedFrom: z.string().optional(),
+  updatedTo: z.string().optional(),
+  sortBy: z
+    .enum([
+      'name',
+      'createdAt',
+      'updatedAt',
+      'fileSize',
+      'documentType',
+      'created',
+      'modified',
+      'size',
+      'type',
+    ])
+    .optional(),
+  sortOrder: z.enum(['asc', 'desc']).optional(),
+  page: z.coerce.number().int().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+});
+

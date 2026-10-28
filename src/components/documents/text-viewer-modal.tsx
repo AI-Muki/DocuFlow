@@ -16,6 +16,7 @@ export interface TextViewerModalProps {
   onClose: () => void;
   documentId: string | null;
   documentName?: string;
+  versionNumber?: number | null;
 }
 
 export function TextViewerModal({
@@ -23,6 +24,7 @@ export function TextViewerModal({
   onClose,
   documentId,
   documentName,
+  versionNumber,
 }: TextViewerModalProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [data, setData] = useState<{ text: string; fileName: string; mimeType: string } | null>(null);
@@ -42,7 +44,8 @@ export function TextViewerModal({
       setIsLoading(true);
       setError(null);
       try {
-        const res = await fetch(`/api/documents/${documentId}/text-content`);
+        const url = `/api/documents/${documentId}/text-content${versionNumber ? `?version=${versionNumber}` : ''}`;
+        const res = await fetch(url);
         const json = await res.json();
         if (!json.success) {
           throw new Error(json.message || 'Could not load text content for this document');
@@ -56,7 +59,7 @@ export function TextViewerModal({
     };
 
     fetchText();
-  }, [isOpen, documentId]);
+  }, [isOpen, documentId, versionNumber]);
 
   const handleCopy = async () => {
     if (!data?.text) return;
@@ -72,7 +75,7 @@ export function TextViewerModal({
   const handleDownload = () => {
     if (!documentId) return;
     const link = document.createElement('a');
-    link.href = `/api/documents/${documentId}/download`;
+    link.href = `/api/documents/${documentId}/download${versionNumber ? `?version=${versionNumber}` : ''}`;
     link.setAttribute('download', data?.fileName || 'document.txt');
     document.body.appendChild(link);
     link.click();
@@ -91,6 +94,11 @@ export function TextViewerModal({
         <div className="flex items-center gap-2">
           <FileCode className="h-5 w-5 text-blue-600" />
           <span className="truncate max-w-md">{documentName || data?.fileName || 'Document Content'}</span>
+          {versionNumber && (
+            <Badge variant="secondary" className="font-mono text-2xs">
+              v{versionNumber}
+            </Badge>
+          )}
         </div>
       }
     >

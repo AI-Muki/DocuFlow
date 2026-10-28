@@ -6,10 +6,12 @@ import type {
   Document,
   DocumentComment,
   DocumentFieldDefinition,
+  DocumentFilterOptions,
   DocumentStatus,
   DocumentType,
   DocumentVersion,
   Folder,
+  PaginatedDocuments,
   Tag,
   User,
 } from '../../types/index.ts';
@@ -121,20 +123,23 @@ export class DocumentFolderService {
 
   public getDocuments(
     user: User,
-    filter?: {
-      folderId?: string | null;
-      documentTypeId?: string;
-      status?: DocumentStatus;
-      ownerId?: string;
-      search?: string;
-      view?: 'all' | 'favorites' | 'recent' | 'trash';
-      tagId?: string;
-      tag?: string;
-    }
+    filter?: DocumentFilterOptions
   ): Document[] {
     rbacService.assertPermission(user, 'documents.read');
     const orgId = user.organizationId!;
     return documentStore.getDocuments(orgId, {
+      ...filter,
+      userId: user.id,
+    });
+  }
+
+  public getDocumentsPaginated(
+    user: User,
+    filter?: DocumentFilterOptions
+  ): PaginatedDocuments {
+    rbacService.assertPermission(user, 'documents.read');
+    const orgId = user.organizationId!;
+    return documentStore.getDocumentsPaginated(orgId, {
       ...filter,
       userId: user.id,
     });
@@ -220,10 +225,11 @@ export class DocumentFolderService {
 
     const updated = documentStore.updateDocument(orgId, documentId, data);
 
+    const action = data.name ? 'document.renamed' : 'document.updated';
     store.recordAuditLog(
       orgId,
       user.id,
-      'document.updated',
+      action,
       'Document',
       documentId,
       data
@@ -286,7 +292,7 @@ export class DocumentFolderService {
     rbacService.assertPermission(user, 'documents.delete');
     const orgId = user.organizationId!;
 
-    documentStore.deleteDocument(orgId, documentId);
+    documentStore.deleteDocument(orgId, documentId, user.id);
 
     store.recordAuditLog(
       orgId,
@@ -720,6 +726,29 @@ export class DocumentFolderService {
     );
 
     return comment;
+  }
+
+  public updateDocumentComment(
+    user: User,
+    documentId: string,
+    commentId: string,
+    content: string
+  ): DocumentComment {
+    rbacService.assertPermission(user, 'documents.read');
+    const orgId = user.organizationId!;
+
+    const updated = documentStore.updateDocumentComment(orgId, documentId, commentId, user.id, content);
+
+    store.recordAuditLog(
+      orgId,
+      user.id,
+      'document_comment.updated',
+      'Document',
+      documentId,
+      { commentId, content: updated.content }
+    );
+
+    return updated;
   }
 
   public deleteDocumentComment(user: User, documentId: string, commentId: string): void {

@@ -10,6 +10,7 @@ import {
   Activity,
   ArrowRight,
   ShieldCheck,
+  UploadCloud,
 } from 'lucide-react';
 import type { Organization, User } from '../../types/index.ts';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card.tsx';
@@ -17,12 +18,14 @@ import { Badge } from '../ui/badge.tsx';
 import { Button } from '../ui/button.tsx';
 import { EmptyState } from '../ui/empty-state.tsx';
 import { formatDateTime } from '../../lib/utils.ts';
+import { DocumentDropZone } from '../documents/document-drop-zone.tsx';
 
 export interface DashboardViewProps {
   user: User;
   organization: Organization;
   onNavigateSettings: (tab?: string) => void;
   onNavigateSection: (section: any) => void;
+  onQuickUpload?: (files?: File[]) => void;
 }
 
 export function DashboardView({
@@ -30,6 +33,7 @@ export function DashboardView({
   organization,
   onNavigateSettings,
   onNavigateSection,
+  onQuickUpload,
 }: DashboardViewProps) {
   const primaryRole = user.roles?.[0]?.name || 'EMPLOYEE';
   const userCount = organization.stats?.userCount ?? 1;
@@ -124,25 +128,38 @@ export function DashboardView({
 
       {/* Planned Phase 2 Functional Modules (Empty States with Clean Architecture Guidance) */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        {/* Module 1: Documents */}
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
+        {/* Module 1: Documents & Quick Intake */}
+        <Card className="border-blue-200/70 bg-linear-to-b from-blue-50/20 to-white shadow-2xs">
+          <CardHeader className="flex flex-row items-center justify-between pb-3">
             <div>
-              <CardTitle>Documents</CardTitle>
-              <CardDescription>Enterprise repository and file classification</CardDescription>
+              <CardTitle className="text-base flex items-center gap-2">
+                <FileText className="h-4 w-4 text-blue-600" />
+                Document Intake & Repository
+              </CardTitle>
+              <CardDescription className="text-xs">
+                Drag and drop files to immediately store, classify & version documents
+              </CardDescription>
             </div>
-            <Badge variant="outline">Phase 2</Badge>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onNavigateSection('documents')}
+              className="text-xs h-7"
+            >
+              Browse Explorer <ArrowRight className="ml-1 h-3 w-3" />
+            </Button>
           </CardHeader>
-          <CardContent>
-            <EmptyState
-              icon={<FileText className="h-6 w-6 text-slate-400" />}
-              title="No documents uploaded yet"
-              description="Document ingestion, OCR metadata extraction, and AI categorization engines will be integrated in Phase 2."
-              action={
-                <Button variant="outline" size="sm" onClick={() => onNavigateSection('documents')}>
-                  View Module Specs <ArrowRight className="ml-1 h-3.5 w-3.5" />
-                </Button>
-              }
+          <CardContent className="pt-0">
+            <DocumentDropZone
+              onFilesDropped={(files) => {
+                if (onQuickUpload) {
+                  onQuickUpload(files);
+                } else {
+                  onNavigateSection('documents');
+                }
+              }}
+              title="Drop documents here to intake into repository"
+              description="Supports PDF, Word, Excel, PowerPoint, Images, and TXT (Max 25 MB)"
             />
           </CardContent>
         </Card>

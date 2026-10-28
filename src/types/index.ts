@@ -85,6 +85,7 @@ export interface AuditLog {
   organizationId: string;
   userId: string | null;
   userEmail?: string;
+  userName?: string;
   action: string;
   entity: string;
   entityId?: string | null;
@@ -234,6 +235,7 @@ export interface Document {
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
+  deletedById?: string | null;
   // Hydrated details
   isFavorite?: boolean;
   folder?: Folder | null;
@@ -244,6 +246,7 @@ export interface Document {
   fieldValues?: DocumentFieldValue[]; // raw field values
   owner?: User | null;
   createdBy?: User | null;
+  deletedBy?: User | null;
 }
 
 export interface DocumentComment {
@@ -257,4 +260,60 @@ export interface DocumentComment {
   createdAt: string;
   updatedAt: string;
 }
+
+// ----------------------------------------------------------------------
+// Phase 2F: Search, Filter, Sort & Pagination Types
+// ----------------------------------------------------------------------
+
+export type DocumentSortBy =
+  | 'name'
+  | 'createdAt'
+  | 'updatedAt'
+  | 'fileSize'
+  | 'documentType'
+  | 'created'
+  | 'modified'
+  | 'size'
+  | 'type';
+
+export type DocumentSortOrder = 'asc' | 'desc';
+
+export interface DocumentFilterOptions {
+  folderId?: string | null;
+  documentTypeId?: string;
+  status?: DocumentStatus;
+  ownerId?: string;
+  search?: string;
+  view?: 'all' | 'favorites' | 'recent' | 'trash';
+  userId?: string;
+  tagId?: string;
+  tag?: string;
+  tagIds?: string[];
+  fileType?: string; // extension or category (pdf, docx, image, spreadsheet, etc.)
+  minSize?: number;
+  maxSize?: number;
+  createdFrom?: string;
+  createdTo?: string;
+  updatedFrom?: string;
+  updatedTo?: string;
+  sortBy?: DocumentSortBy;
+  sortOrder?: DocumentSortOrder;
+  page?: number;
+  limit?: number;
+}
+
+export interface PaginationMeta {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+  hasNext: boolean;
+  hasPrev: boolean;
+}
+
+export interface PaginatedDocuments {
+  data: Document[];
+  pagination: PaginationMeta;
+}
+
 

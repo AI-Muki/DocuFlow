@@ -1,6 +1,6 @@
 {
   "name": "DocuFlow AI",
-  "description": "Intelligent enterprise document management platform - Phase 2B File Storage & Document Upload Flow.",
+  "description": "DocuFlow AI - Intelligent Enterprise Document Management platform featuring multi-tenant isolation, versioning, cryptographic checksum verification, and intuitive drag-and-drop document intake.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

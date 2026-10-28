@@ -20,6 +20,7 @@ import {
   createFieldDefinitionSchema,
   createFolderSchema,
   createTagSchema,
+  documentQuerySchema,
   moveDocumentSchema,
   moveFolderSchema,
   renameFolderSchema,
@@ -301,25 +302,20 @@ documentRouter.delete('/tags/:id', requirePermission('documents.update'), (req: 
 
 documentRouter.get('/documents', (req: AuthenticatedRequest, res: Response) => {
   try {
-    const folderId = req.query.folderId !== undefined
-      ? (req.query.folderId === 'null' || req.query.folderId === '' ? null : String(req.query.folderId))
-      : undefined;
+    const parseResult = documentQuerySchema.safeParse(req.query);
+    if (!parseResult.success) {
+      throw new ValidationError('Invalid document query parameters', parseResult.error.issues);
+    }
 
-    const filter = {
-      folderId,
-      documentTypeId: req.query.documentTypeId ? String(req.query.documentTypeId) : undefined,
-      status: req.query.status ? (String(req.query.status) as DocumentStatus) : undefined,
-      ownerId: req.query.ownerId ? String(req.query.ownerId) : undefined,
-      search: req.query.search ? String(req.query.search) : undefined,
-      view: req.query.view ? (String(req.query.view) as 'all' | 'favorites' | 'recent' | 'trash') : undefined,
-      tagId: req.query.tagId ? String(req.query.tagId) : undefined,
-      tag: req.query.tag ? String(req.query.tag) : undefined,
-    };
-
-    const documents = documentFolderService.getDocuments(req.user!, filter);
-    res.json({ success: true, data: documents });
+    const result = documentFolderService.getDocumentsPaginated(req.user!, parseResult.data);
+    res.json({
+      success: true,
+      data: result.data,
+      pagination: result.pagination,
+    });
   } catch (err: unknown) {
-    res.status(500).json(formatErrorResponse(err));
+    const status = (err as { statusCode?: number }).statusCode || 500;
+    res.status(status).json(formatErrorResponse(err));
   }
 });
 
@@ -532,6 +528,21 @@ documentRouter.patch('/documents/:id', requirePermission('documents.update'), (r
   }
 });
 
+documentRouter.put('/documents/:id', requirePermission('documents.update'), (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const parseResult = updateDocumentSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      throw new ValidationError('Validation failed', parseResult.error.issues);
+    }
+
+    const updated = documentFolderService.updateDocument(req.user!, req.params.id, parseResult.data);
+    res.json({ success: true, data: updated });
+  } catch (err: unknown) {
+    const status = (err as { statusCode?: number }).statusCode || 400;
+    res.status(status).json(formatErrorResponse(err));
+  }
+});
+
 documentRouter.patch('/documents/:id/move', requirePermission('documents.update'), (req: AuthenticatedRequest, res: Response) => {
   try {
     const parseResult = moveDocumentSchema.safeParse(req.body);
@@ -581,7 +592,7 @@ documentRouter.delete('/documents/:id', requirePermission('documents.delete'), (
 // Document Versions API
 // ----------------------------------------------------------------------
 
-documentRouter.get('/documents/:id/versions', (req: AuthenticatedRequest, res: Response) => {
+documentRouter.get('/documents/:id/versions', requirePermission('documents.read'), (req: AuthenticatedRequest, res: Response) => {
   try {
     const versions = documentFolderService.getDocumentVersions(req.user!, req.params.id);
     res.json({ success: true, data: versions });
@@ -590,6 +601,58 @@ documentRouter.get('/documents/:id/versions', (req: AuthenticatedRequest, res: R
     res.status(status).json(formatErrorResponse(err));
   }
 });
+
+documentRouter.get(
+  '/documents/:id/versions/:versionNumber/download',
+  requirePermission('documents.read'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const versionNumber = parseInt(req.params.versionNumber, 10);
+      if (isNaN(versionNumber)) {
+        throw new ValidationError('Version number must be an integer');
+      }
+      const download = await documentUploadService.downloadDocumentFile(req.user!, req.params.id, versionNumber);
+
+      res.setHeader('Content-Type', download.mimeType);
+      res.setHeader('Content-Length', download.fileSize);
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${encodeURIComponent(download.fileName)}"`
+      );
+      res.setHeader('Cache-Control', 'private, no-cache, no-store, must-revalidate');
+      res.send(download.buffer);
+    } catch (err: unknown) {
+      const status = (err as { statusCode?: number }).statusCode || 404;
+      res.status(status).json(formatErrorResponse(err));
+    }
+  }
+);
+
+documentRouter.get(
+  '/documents/:id/versions/:versionNumber/preview',
+  requirePermission('documents.read'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const versionNumber = parseInt(req.params.versionNumber, 10);
+      if (isNaN(versionNumber)) {
+        throw new ValidationError('Version number must be an integer');
+      }
+      const download = await documentUploadService.downloadDocumentFile(req.user!, req.params.id, versionNumber);
+
+      res.setHeader('Content-Type', download.mimeType);
+      res.setHeader('Content-Length', download.fileSize);
+      res.setHeader(
+        'Content-Disposition',
+        `inline; filename="${encodeURIComponent(download.fileName)}"`
+      );
+      res.setHeader('Cache-Control', 'private, no-cache, no-store, must-revalidate');
+      res.send(download.buffer);
+    } catch (err: unknown) {
+      const status = (err as { statusCode?: number }).statusCode || 404;
+      res.status(status).json(formatErrorResponse(err));
+    }
+  }
+);
 
 documentRouter.post('/documents/:id/versions', requirePermission('documents.update'), (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -766,6 +829,20 @@ documentRouter.post('/documents/:id/comments', requirePermission('documents.read
   }
 });
 
+documentRouter.put('/documents/:id/comments/:commentId', requirePermission('documents.read'), (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const content = req.body?.content;
+    if (!content || typeof content !== 'string') {
+      throw new ValidationError('Content is required');
+    }
+    const updated = documentFolderService.updateDocumentComment(req.user!, req.params.id, req.params.commentId, content);
+    res.json({ success: true, data: updated, message: 'Comment updated successfully' });
+  } catch (err: unknown) {
+    const status = (err as { statusCode?: number }).statusCode || 400;
+    res.status(status).json(formatErrorResponse(err));
+  }
+});
+
 documentRouter.delete('/documents/:id/comments/:commentId', requirePermission('documents.read'), (req: AuthenticatedRequest, res: Response) => {
   try {
     documentFolderService.deleteDocumentComment(req.user!, req.params.id, req.params.commentId);
@@ -788,9 +865,10 @@ documentRouter.get('/documents/:id/activity', requirePermission('documents.read'
 
 documentRouter.get('/documents/:id/text-content', requirePermission('documents.read'), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const download = await documentUploadService.downloadDocumentFile(req.user!, req.params.id);
+    const versionNumber = req.query.version !== undefined ? parseInt(String(req.query.version), 10) : undefined;
+    const download = await documentUploadService.downloadDocumentFile(req.user!, req.params.id, versionNumber);
     const text = download.buffer.toString('utf-8');
-    res.json({ success: true, data: { text, fileName: download.fileName, mimeType: download.mimeType } });
+    res.json({ success: true, data: { text, fileName: download.fileName, mimeType: download.mimeType, versionNumber: versionNumber || 'latest' } });
   } catch (err: unknown) {
     const status = (err as { statusCode?: number }).statusCode || 404;
     res.status(status).json(formatErrorResponse(err));

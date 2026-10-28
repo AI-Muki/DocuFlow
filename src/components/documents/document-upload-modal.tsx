@@ -40,6 +40,7 @@ export interface DocumentUploadModalProps {
   folders: Folder[];
   documentTypes: DocumentType[];
   tags: Tag[];
+  initialFiles?: File[];
 }
 
 const SUPPORTED_EXTENSIONS = [
@@ -66,6 +67,7 @@ export function DocumentUploadModal({
   folders,
   documentTypes,
   tags: availableTags,
+  initialFiles,
 }: DocumentUploadModalProps) {
   const [items, setItems] = useState<UploadItem[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -122,6 +124,13 @@ export function DocumentUploadModal({
 
     setItems((prev) => [...prev, ...newItems]);
   };
+
+  // Pre-populate queue when initialFiles are passed into the modal
+  React.useEffect(() => {
+    if (isOpen && initialFiles && initialFiles.length > 0) {
+      addFilesToQueue(initialFiles);
+    }
+  }, [isOpen, initialFiles]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Bell, Building2, ChevronDown, Menu } from 'lucide-react';
+import { Bell, Building2, ChevronDown, Menu, UploadCloud } from 'lucide-react';
 import type { Organization, User } from '../../types/index.ts';
 import { Breadcrumbs, type BreadcrumbItem } from './breadcrumbs.tsx';
 import { UserMenu } from './user-menu.tsx';
@@ -11,6 +11,9 @@ export interface HeaderProps {
   onLogout: () => void;
   onNavigateSettings: () => void;
   onToggleMobileSidebar: () => void;
+  onQuickUpload?: () => void;
+  onToggleDropZone?: () => void;
+  isDropZoneVisible?: boolean;
 }
 
 export function Header({
@@ -20,6 +23,9 @@ export function Header({
   onLogout,
   onNavigateSettings,
   onToggleMobileSidebar,
+  onQuickUpload,
+  onToggleDropZone,
+  isDropZoneVisible,
 }: HeaderProps) {
   const [showNotifications, setShowNotifications] = useState(false);
 
@@ -37,7 +43,39 @@ export function Header({
         <Breadcrumbs items={breadcrumbs} />
       </div>
 
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2.5 sm:gap-3">
+        {/* Quick Document Intake / Upload Button */}
+        {onQuickUpload && (
+          <button
+            type="button"
+            onClick={onQuickUpload}
+            className="flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50/80 hover:bg-blue-100/80 text-blue-700 px-2.5 py-1.5 text-xs font-semibold shadow-2xs transition-colors"
+            title="Upload or drop documents"
+            aria-label="Upload documents"
+          >
+            <UploadCloud className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Intake Files</span>
+          </button>
+        )}
+
+        {/* Toggle Drop Zone in AppShell */}
+        {onToggleDropZone && (
+          <button
+            type="button"
+            onClick={onToggleDropZone}
+            className={`hidden sm:flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-semibold shadow-2xs transition-colors ${
+              isDropZoneVisible
+                ? 'border-blue-300 bg-blue-100/80 text-blue-800'
+                : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
+            }`}
+            title={isDropZoneVisible ? 'Hide intake drop zone' : 'Show intake drop zone'}
+            aria-label="Toggle drop zone intake"
+          >
+            <UploadCloud className="h-3.5 w-3.5 text-blue-600" />
+            <span>Drop Zone</span>
+          </button>
+        )}
+
         {/* Organization Selector Placeholder */}
         {organization && (
           <div className="hidden items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 sm:flex">

@@ -15,7 +15,7 @@ test.describe('DocuFlow AI - Enterprise E2E Critical Flows', () => {
 
     // Wait for Dashboard to render
     await expect(page.getByText('Welcome back')).toBeVisible({ timeout: 10000 });
-    await expect(page.getByText('Demo Corporation')).toBeVisible();
+    await expect(page.getByText('Demo Corporation').first()).toBeVisible();
     await expect(page.getByText('Multi-tenant isolated')).toBeVisible();
   });
 
@@ -27,17 +27,41 @@ test.describe('DocuFlow AI - Enterprise E2E Critical Flows', () => {
     await expect(page.getByText('Welcome back')).toBeVisible();
 
     // Navigate to Settings
-    await page.getByRole('button', { name: 'Settings' }).click();
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
     await expect(page.getByText('Workspace Settings')).toBeVisible();
 
     // Switch to Users tab
     await page.getByRole('button', { name: /Users & Directory/ }).click();
     await expect(page.getByText('Organization Directory')).toBeVisible();
-    await expect(page.getByText('admin@demo.local')).toBeVisible();
+    await expect(page.getByText('admin@demo.local').first()).toBeVisible();
 
     // Switch to Roles tab
     await page.getByRole('button', { name: /Roles & Permissions/ }).click();
     await expect(page.getByText('Role-Based Access Control (RBAC)')).toBeVisible();
+  });
+
+  test('User can browse documents, search, and toggle filters', async ({ page }) => {
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Org Admin' }).click();
+    await page.getByRole('button', { name: 'Sign In' }).click();
+
+    await expect(page.getByText('Welcome back')).toBeVisible();
+
+    // Navigate to Documents view
+    await page.getByRole('button', { name: /Documents/ }).click();
+    await expect(page.getByText('Document Management')).toBeVisible();
+
+    // Check search input exists
+    const searchInput = page.getByPlaceholder('Search name, file, tags, type...');
+    await expect(searchInput).toBeVisible();
+
+    // Type search query
+    await searchInput.fill('Invoice');
+    await page.waitForTimeout(400);
+
+    // Toggle Filters panel
+    await page.getByRole('button', { name: 'Toggle filter panel' }).click();
+    await expect(page.getByText('Advanced Document Filters')).toBeVisible();
   });
 
   test('New User can register and onboard an organization', async ({ page }) => {
@@ -63,7 +87,7 @@ test.describe('DocuFlow AI - Enterprise E2E Critical Flows', () => {
     await page.getByRole('button', { name: 'Complete Setup & Launch Dashboard' }).click();
 
     // Verify entered dashboard with new tenant
-    await expect(page.getByText(`Nexus Global ${timestamp}`)).toBeVisible();
+    await expect(page.getByText(`Nexus Global ${timestamp}`).first()).toBeVisible();
     await expect(page.getByText('Active Tenant:')).toBeVisible();
   });
 });

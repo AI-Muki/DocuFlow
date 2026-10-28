@@ -181,7 +181,9 @@ export class DataStore {
     );
 
     // 6. Seed Phase 2A Document & Folder Foundation Defaults
-    documentStore.seedPhase2Defaults(demoOrgId, adminUser.id);
+    if (typeof documentStore !== 'undefined' && documentStore?.seedPhase2Defaults) {
+      documentStore.seedPhase2Defaults(demoOrgId, adminUser.id);
+    }
 
     this.isInitialized = true;
   }
@@ -441,6 +443,7 @@ export class DataStore {
       organizationId,
       userId,
       userEmail: user?.email,
+      userName: user ? `${user.firstName} ${user.lastName}`.trim() : undefined,
       action,
       entity,
       entityId: entityId || null,
